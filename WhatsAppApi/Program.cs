@@ -46,9 +46,9 @@ builder.WebHost.ConfigureKestrel(options =>
     else
     {
         // Use standard HTTP URLs for non-Linux environments
-        options.ListenLocalhost(5000);
-        options.ListenLocalhost(5001, listenOptions => listenOptions.UseHttps());
-        Console.WriteLine("Listening on HTTP at http://localhost:5000 and HTTPS at https://localhost:5001");
+        //options.ListenLocalhost(5000);
+        //options.ListenLocalhost(5001, listenOptions => listenOptions.UseHttps());
+        //Console.WriteLine("Listening on HTTP at http://localhost:5000 and HTTPS at https://localhost:5001");
     }
 
     // Enable synchronous I/O if needed
