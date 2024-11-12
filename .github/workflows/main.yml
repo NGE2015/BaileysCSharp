@@ -1,0 +1,103 @@
+name: CI
+
+on: 
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Default production environment secrets
+      DEFAULT_REMOTE: ${{ secrets.REMOTE_TARGET }}
+      DEFAULT_SERVICE_NAME: ${{ secrets.SYSTEMD_SERVICE_NAME }}
+      # Development environment secrets
+      DEV_REMOTE: ${{ secrets.REMOTE_TARGET_DEV }}
+      DEV_SERVICE_NAME: ${{ secrets.SYSTEMD_SERVICE_NAME_DEV }}
+      # Demo environment secrets
+      DEMO_REMOTE: ${{ secrets.REMOTE_TARGET_DEMO }}
+      DEMO_SERVICE_NAME: ${{ secrets.SYSTEMD_SERVICE_NAME_DEMO }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET Core
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Determine Environment and Set Variables
+        run: |
+          ENV_VALUE=$(jq -r '.publish.Env' WhatsAppApi/appsettings.json)
+          echo "Environment value is: $ENV_VALUE"
+          if [ "$ENV_VALUE" = "dev" ]; then
+            echo "Chosen environment is Development"
+            echo "REMOTE_TARGET=${DEV_REMOTE}" >> $GITHUB_ENV
+            echo "SYSTEMD_SERVICE_NAME=${DEV_SERVICE_NAME}" >> $GITHUB_ENV
+          elif [ "$ENV_VALUE" = "demo" ]; then
+            echo "Chosen environment is Demo"
+            echo "REMOTE_TARGET=${DEMO_REMOTE}" >> $GITHUB_ENV
+            echo "SYSTEMD_SERVICE_NAME=${DEMO_SERVICE_NAME}" >> $GITHUB_ENV
+          else
+            echo "Chosen environment is Production"
+            echo "REMOTE_TARGET=${DEFAULT_REMOTE}" >> $GITHUB_ENV
+            echo "SYSTEMD_SERVICE_NAME=${DEFAULT_SERVICE_NAME}" >> $GITHUB_ENV
+          fi
+
+      - name: Dotnet Restore
+        run: dotnet restore ./WhatsAppApi/WhatsAppApi.csproj
+
+      - name: Dotnet Build
+        run: dotnet build ./WhatsAppApi/WhatsAppApi.csproj -c Release --no-restore
+
+      - name: Dotnet Publish
+        run: dotnet publish ./WhatsAppApi/WhatsAppApi.csproj -c Release -o publish/ -r linux-x64
+
+      - name: Zip Published Files
+        run: |
+          cd publish/
+          zip -r publish.zip .
+          mv publish.zip ${{ github.workspace }}/
+
+      - name: SSH Stop APP
+        uses: appleboy/ssh-action@v0.1.4
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          script: systemctl stop ${{ env.SYSTEMD_SERVICE_NAME }}
+
+      - name: Copy file via SSH
+        uses: appleboy/scp-action@v0.1.2
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "${{ github.workspace }}/publish.zip"
+          target: "${{ env.REMOTE_TARGET }}"
+
+      - name: SSH Unzip, Give Permissions
+        uses: appleboy/ssh-action@v0.1.4
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            unzip -o ${{ env.REMOTE_TARGET }}/github/workspace/publish.zip -d ${{ env.REMOTE_TARGET }}
+            chmod 777 ${{ env.REMOTE_TARGET }}/WhatsAppApi.dll
+    
+      - name: Restart Application Service
+        uses: appleboy/ssh-action@v0.1.4
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          script: systemctl restart ${{ env.SYSTEMD_SERVICE_NAME }}
