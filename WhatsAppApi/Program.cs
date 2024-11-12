@@ -1,11 +1,14 @@
 using System;
 using System.IO;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using WhatsAppApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Load configuration
-var configuration = new ConfigurationBuilder().AddJsonFile("appsettings.json").Build();
+// Load configuration from appsettings.json
+var configuration = builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true).Build();
 string unixSocketPath = configuration["Kestrel:UnixSocketPath"];
 
 // Add services
@@ -25,6 +28,33 @@ builder.Services.AddHostedService<WhatsAppHostedServiceV2>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.WebHost.ConfigureKestrel(options =>
+{
+    if (OperatingSystem.IsLinux())
+    {
+        // Delete existing Unix socket file if it exists
+        if (File.Exists(unixSocketPath))
+        {
+            File.Delete(unixSocketPath);
+            Console.WriteLine($"Deleted existing Unix socket file: {unixSocketPath}");
+        }
+
+        // Configure Kestrel to listen on the Unix socket
+        options.ListenUnixSocket(unixSocketPath);
+        Console.WriteLine($"Listening on Unix socket: {unixSocketPath}");
+    }
+    else
+    {
+        // Use standard HTTP URLs for non-Linux environments
+        options.ListenLocalhost(5000);
+        options.ListenLocalhost(5001, listenOptions => listenOptions.UseHttps());
+        Console.WriteLine("Listening on HTTP at http://localhost:5000 and HTTPS at https://localhost:5001");
+    }
+
+    // Enable synchronous I/O if needed
+    options.AllowSynchronousIO = true;
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline
@@ -39,27 +69,8 @@ app.UseHttpsRedirection();
 app.UseAuthorization();
 app.MapControllers();
 
-// Conditional Kestrel configuration based on the platform
-if (OperatingSystem.IsLinux())
-{
-    // Delete the Unix socket file if it exists
-    if (File.Exists(unixSocketPath))
-    {
-        File.Delete(unixSocketPath);
-    }
-
-    // Configure Kestrel to use Unix socket
-    app.Urls.Clear();
-    app.Urls.Add($"unix://{unixSocketPath}");
-}
-else
-{
-    // Use standard HTTP URL for development on Windows
-    app.Urls.Add("https://localhost:5001");
-    app.Urls.Add("http://localhost:5000");
-}
-
 app.Run();
+
 
 
 //using WhatsAppApi.Services;
