@@ -667,6 +667,8 @@ namespace BaileysCSharp.Core
                 }
             });
         }
+        
+
         // الداله الاصلية
         private void End(string reason, DisconnectReason connectionLost)
         {
@@ -716,6 +718,40 @@ namespace BaileysCSharp.Core
         public List<ContactModel> GetAllContact()
         {
             return Store.GetAllContact();
+        }
+        public void PublicEnd()
+        {
+            End("Session terminated by user request", DisconnectReason.LoggedOut);
+        }
+        public void CleanupSession()
+        {
+            try
+            {
+                // Disconnect WebSocket client
+                WS.Disconnect();
+                WS.Opened -= Client_Opened;
+                WS.Disconnected -= Client_Disconnected;
+                WS.MessageRecieved -= Client_MessageRecieved;
+
+                // Cancel any active tokens
+                keepAliveToken?.Cancel();
+                qrTimerToken?.Cancel();
+
+                // Dispose of the key store
+                if (Keys is IDisposable disposableKeys)
+                {
+                    disposableKeys.Dispose();
+                }
+
+                // Clear credentials
+                Creds = null;
+
+                Logger.Info("Session cleanup completed successfully.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "Error during session cleanup.");
+            }
         }
     }
 }

@@ -84,7 +84,7 @@ namespace WhatsAppApi.Services
             socket.EV.Message.Upsert += (sender, e) => Message_Upsert(sender, e, sessionName);
             socket.EV.MessageHistory.Set += MessageHistory_Set;
             socket.EV.Pressence.Update += Pressence_Update;
-
+            
             socket.MakeSocket();
 
             sessionData.Socket = socket;
@@ -99,15 +99,42 @@ namespace WhatsAppApi.Services
         {
             if (_sessions.TryRemove(sessionName, out var sessionData))
             {
-                // Implement any necessary shutdown logic here
-                //sessionData.Socket?.Dispose();
-                _logger.LogInformation($"Session {sessionName} stopped.");
+                try
+                {
+                    // Cleanup the session resources
+                    sessionData.Socket?.CleanupSession();
+
+                    // Wait a short delay to ensure all resources are released
+                    await Task.Delay(1000, cancellationToken);
+
+                    // Delete the session data folder
+                    var sessionFolderPath = Path.Combine(AppContext.BaseDirectory, sessionName);
+                    if (Directory.Exists(sessionFolderPath))
+                    {
+                        try
+                        {
+                            Directory.Delete(sessionFolderPath, true);
+                            _logger.LogInformation($"Session {sessionName} stopped and folder deleted.");
+                        }
+                        catch (Exception)
+                        {
+
+                            _logger.LogInformation($"Session {sessionName} stopped and folder NOT deleted.");
+                        }
+
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Error while stopping session {sessionName}.");
+                }
             }
             else
             {
                 _logger.LogWarning($"Session {sessionName} not found.");
             }
         }
+
 
         private void Auth_Update(object? sender, AuthenticationCreds e, string sessionName)
         {
