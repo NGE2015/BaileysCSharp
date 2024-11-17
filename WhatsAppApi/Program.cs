@@ -65,6 +65,14 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowBlazorClient");
+app.UseCors(policy =>
+{
+    policy.AllowAnyMethod()
+          .AllowAnyHeader()
+          .AllowCredentials()
+          .SetIsOriginAllowed(origin =>
+              origin.EndsWith(".rubymanager.app", StringComparison.OrdinalIgnoreCase));
+});
 app.UseHttpsRedirection();
 app.UseAuthorization();
 app.MapControllers();
