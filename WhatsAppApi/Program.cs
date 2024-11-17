@@ -20,6 +20,16 @@ builder.Services.AddCors(options =>
                      .AllowAnyMethod()
                      .AllowAnyHeader()
                      .AllowCredentials());
+    options.AddPolicy("AllowBlazorClientRubyManager", policyBuilder =>
+    policyBuilder.WithOrigins(
+        "https://school.rubymanager.app",
+        "https://developmentschool.rubymanager.app",
+        "https://demoschool.rubymanager.app"
+    )
+    .AllowAnyMethod()
+    .AllowAnyHeader()
+    .AllowCredentials());
+
 });
 
 builder.Services.AddSingleton<IWhatsAppServiceV2, WhatsAppServiceV2>();
@@ -65,14 +75,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowBlazorClient");
-app.UseCors(policy =>
-{
-    policy.AllowAnyMethod()
-          .AllowAnyHeader()
-          .AllowCredentials()
-          .SetIsOriginAllowed(origin =>
-              origin.EndsWith(".rubymanager.app", StringComparison.OrdinalIgnoreCase));
-});
+app.UseCors("AllowBlazorClientRubyManager");
+
 app.UseHttpsRedirection();
 app.UseAuthorization();
 app.MapControllers();
