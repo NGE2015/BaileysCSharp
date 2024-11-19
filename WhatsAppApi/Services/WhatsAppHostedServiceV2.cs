@@ -11,7 +11,7 @@ namespace WhatsAppApi.Services
         private readonly IWhatsAppServiceV2 _whatsAppService;
         private Timer _timer;
         private readonly TimeSpan _cleanupInterval = TimeSpan.FromMinutes(10); // Adjust as needed
-        private readonly TimeSpan _inactiveThreshold = TimeSpan.FromHours(1);  // Adjust as needed
+        private readonly TimeSpan _inactiveThreshold = TimeSpan.FromHours(720);  // Adjust as needed
 
         public WhatsAppHostedServiceV2(IWhatsAppServiceV2 whatsAppService)
         {
