@@ -6,7 +6,10 @@ using Microsoft.Extensions.Hosting;
 using WhatsAppApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
-
+// Configure logging providers after the builder is created:
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.SetMinimumLevel(LogLevel.Trace);
 // Load configuration from appsettings.json
 var configuration = builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true).Build();
 string unixSocketPath = configuration["Kestrel:UnixSocketPath"];
