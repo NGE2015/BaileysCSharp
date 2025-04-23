@@ -285,7 +285,7 @@ namespace WhatsAppApi.Services
             var imagePath = Path.Combine(logDir, $"{sessionName}_{timeTag}.png");
             try
             {
-                await File.WriteAllBytesAsync(imagePath, mediaBytes);
+                //await File.WriteAllBytesAsync(imagePath, mediaBytes);
             }
             catch
             {
