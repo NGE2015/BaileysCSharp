@@ -36,7 +36,18 @@ namespace WhatsAppApi.Controllers
             await _whatsAppService.SendMessage(request.SessionName, request.RemoteJid, request.Message);
             return Ok(new { Status = "Message sent" });
         }
-
+        [HttpPost("sendMedia")]
+        public async Task<IActionResult> SendMedia([FromBody] SendMediaRequest req)
+        {
+            await _whatsAppService.SendMediaAsync(
+                req.SessionName,
+                req.RemoteJid,
+                req.MediaBytes,
+                req.MimeType,
+                req.Caption
+            );
+            return Ok(new { Status = "Media sent" });
+        }
         [HttpGet("getAsciiQRCode")]
         public IActionResult GetAsciiQRCode([FromQuery] string sessionName)
         {
@@ -78,6 +89,24 @@ namespace WhatsAppApi.Controllers
         public string SessionName { get; set; }
         public string RemoteJid { get; set; }
         public string Message { get; set; }
+    }
+    /// <summary>
+    /// POST v2/WhatsApp/sendMedia
+    /// {
+    ///   "sessionName": "mySession",
+    ///   "remoteJid": "2779xxxxxxx@s.whatsapp.net",
+    ///   "mediaBytes": "<base64 binary map>",
+    ///   "mimeType": "image/jpeg",
+    ///   "caption": "Here’s your picture!"
+    /// }
+    /// </summary>
+    public class SendMediaRequest
+    {
+        public string SessionName { get; set; }
+        public string RemoteJid { get; set; }
+        public byte[] MediaBytes { get; set; }
+        public string MimeType { get; set; }
+        public string Caption { get; set; }
     }
 }
 
