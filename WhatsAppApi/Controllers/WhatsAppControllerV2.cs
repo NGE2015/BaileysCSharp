@@ -10,10 +10,12 @@ namespace WhatsAppApi.Controllers
     public class WhatsAppControllerV2 : ControllerBase
     {
         private readonly IWhatsAppServiceV2 _whatsAppService;
+        private readonly IWebHostEnvironment _env;
 
-        public WhatsAppControllerV2(IWhatsAppServiceV2 whatsAppService)
+        public WhatsAppControllerV2(IWhatsAppServiceV2 whatsAppService, IWebHostEnvironment env)
         {
             _whatsAppService = whatsAppService;
+            _env = env;
         }
 
         [HttpPost("startSession")]
@@ -39,6 +41,27 @@ namespace WhatsAppApi.Controllers
         [HttpPost("sendMedia")]
         public async Task<IActionResult> SendMedia([FromBody] SendMediaRequest req)
         {
+            // —— LOGGING START ——
+            try
+            {
+                var logDir = Path.Combine(_env.ContentRootPath, "logs");
+                Directory.CreateDirectory(logDir);
+
+                var logFile = Path.Combine(logDir, "sendmedia.log");
+                var now = DateTime.UtcNow.ToString("o");
+
+                // just the length of the array; don’t clutter your log with the whole blob!
+                var length = req.MediaBytes?.Length ?? 0;
+
+                var line = $"{now}  SESSION={req.SessionName}  JID={req.RemoteJid}  MIME={req.MimeType}  BYTES={length}\n";
+                await System.IO.File.AppendAllTextAsync(logFile, line);
+            }
+            catch
+            {
+                // swallow any logging errors so you don't break the happy path
+            }
+            // —— LOGGING END ——
+
             await _whatsAppService.SendMediaAsync(
                 req.SessionName,
                 req.RemoteJid,
