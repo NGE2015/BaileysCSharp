@@ -262,35 +262,70 @@ namespace WhatsAppApi.Services
         /// Send a media (e.g. image) plus caption via Baileys.
         /// </summary>
         public async Task SendMediaAsync(
-        string sessionName,
-        string remoteJid,
-        byte[] mediaBytes,
-        string mimeType,
-        string caption
-    )
+    string sessionName,
+    string remoteJid,
+    byte[] mediaBytes,
+    string mimeType,
+    string caption
+)
         {
             if (!_sessions.TryGetValue(sessionName, out var sessionData))
                 throw new InvalidOperationException($"Session '{sessionName}' not found.");
 
-            // Wrap bytes in a stream
-            using var ms = new MemoryStream(mediaBytes);
+            // prepare log folder & log file
+            var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            var logFile = Path.Combine(logDir, "SendMediaService.log");
+            Directory.CreateDirectory(logDir);
 
-            // Build the Baileys ImageMessageContent
-            var mediaContent = new ImageMessageContent
+            var now = DateTime.UtcNow;
+            var timeTag = now.ToString("yyyyMMdd_HHmmssfff");
+            var length = mediaBytes?.Length ?? 0;
+
+            // 1) Write the bytes out as a .png so you can open it directly on the server
+            var imagePath = Path.Combine(logDir, $"{sessionName}_{timeTag}.png");
+            try
             {
-                Image = ms,      // Baileys expects the open stream
-                Caption = caption  // your text caption
-            };
+                await File.WriteAllBytesAsync(imagePath, mediaBytes);
+            }
+            catch
+            {
+                // swallow; best‐effort
+            }
 
-            // **This** is the correct call in BaileysCSharp:
-            await sessionData.Socket.SendMessage(
-                remoteJid,
-                mediaContent
-            );
+            // 2) Log the Base64 snippet (first 200 chars) plus length
+            var b64 = Convert.ToBase64String(mediaBytes ?? Array.Empty<byte>());
+            var snippet = b64.Length > 200 ? b64.Substring(0, 200) + "…(truncated)" : b64;
+            var headerLog = $"{now:o}  [Service] session={sessionName} jid={remoteJid} mime={mimeType} bytes={length}\n"
+                          + $"              ImageDump: {imagePath}\n"
+                          + $"              Base64: {snippet}\n";
+            await File.AppendAllTextAsync(logFile, headerLog);
 
-            // Update our last‑activity timestamp
+            // now hand off to Baileys
+            using var ms = new MemoryStream(mediaBytes);
+            try
+            {
+                await sessionData.Socket.SendMessage(
+                    remoteJid,
+                    new ImageMessageContent
+                    {
+                        Image = ms,
+                        Caption = caption
+                    }
+                );
+
+                var doneLine = $"{DateTime.UtcNow:o}  [Service] SendMessage() completed successfully\n";
+                await File.AppendAllTextAsync(logFile, doneLine);
+            }
+            catch (Exception ex)
+            {
+                var errLine = $"{DateTime.UtcNow:o}  [Service] ERROR: {ex}\n";
+                await File.AppendAllTextAsync(logFile, errLine);
+                throw;
+            }
+
             sessionData.LastActivity = DateTime.UtcNow;
         }
+
         public string GetQRCode(string sessionName)
         {
             if (_sessions.TryGetValue(sessionName, out var sessionData))
