@@ -121,5 +121,14 @@ namespace BaileysCSharp.Core.NoSQL
                 }
             }
         }
+        // ------------------------------------------------------------------
+        // Added to close any lingering file handles sooner than finalizers
+        public override void Dispose()
+        {
+            // All file streams are already closed elsewhere; we just
+            // suppress finalization so GC doesn’t run the empty base
+            // finalizer later.
+            GC.SuppressFinalize(this);
+        }
     }
 }

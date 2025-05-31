@@ -45,7 +45,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="CreateSession\pre-key\" />
     <Folder Include="Media\" />
   </ItemGroup>
 

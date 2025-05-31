@@ -18,6 +18,7 @@ using System.Text.Json;
 using System.Text;
 using BaileysCSharp.Core.Logging;
 using BaileysCSharp.Core.WABinary;
+using BaileysCSharp.Core.Helper;
 
 namespace WhatsSocketConsole
 {
@@ -27,13 +28,18 @@ namespace WhatsSocketConsole
         static List<WebMessageInfo> messages = new List<WebMessageInfo>();
         static WASocket socket;
         public static object locker = new object();
-
-        static void Main(string[] args)
+     
+        static async Task Main(string[] args)
         {
             var config = new SocketConfig()
             {
-                SessionName = "27665458845745067",
+                SessionName = "351931652836",
             };
+
+
+
+            // NEW: ask WhatsApp for today’s build and inject it
+            config.Version = await WaBuildHelper.GetLatestWaWebBuildAsync();
 
             var credsFile = Path.Join(config.CacheRoot, $"creds.json");
             AuthenticationCreds? authentication = null;
@@ -51,6 +57,9 @@ namespace WhatsSocketConsole
                 Creds = authentication,
                 Keys = keys
             };
+
+           
+
 
             socket = new WASocket(config);
 
@@ -266,9 +275,9 @@ namespace WhatsSocketConsole
                         Thread.Sleep(1000);
                         socket.MakeSocket();
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
-
+                        Console.WriteLine(ex.Message);
                     }
                 }
                 else

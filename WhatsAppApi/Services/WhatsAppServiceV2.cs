@@ -22,6 +22,7 @@ using static WhatsAppApi.Services.WhatsAppServiceV2;
 using BaileysCSharp.Core.Models.Sending.Media;
 using System.IO;
 using BaileysCSharp.Core.Models.Sending.Media;
+using WhatsAppApi.Helper;          // <— new using
 namespace WhatsAppApi.Services
 {
     public interface IWhatsAppServiceV2
@@ -70,7 +71,7 @@ namespace WhatsAppApi.Services
             {
                 SessionName = sessionName,
             };
-
+            config.Version = await WhatsAppApi.Helper.WaBuildHelper.GetLatestAlphaAsync();
             var credsFile = Path.Join(config.CacheRoot, $"{sessionName}_creds.json");
             AuthenticationCreds? authentication = null;
             if (File.Exists(credsFile))
@@ -109,42 +110,72 @@ namespace WhatsAppApi.Services
 
         public async Task StopSessionAsync(string sessionName, CancellationToken cancellationToken)
         {
-            if (_sessions.TryRemove(sessionName, out var sessionData))
+            if (!_sessions.TryRemove(sessionName, out var sessionData))
+                return;
+            // NEW CODE -------------------------------
+            if (sessionData.Socket is { } sock)
             {
+                await LogoutAndWaitAsync(sock, cancellationToken);
+                sock.CleanupSession();                     // drops in-memory keys
+            }
+
+            var folder = sessionData.Config.CacheRoot;     // REAL path
+            try
+            {
+                Directory.Delete(folder, true);
+                _logger.LogInformation($"Session {sessionName} stopped and folder deleted.");
+            }
+            catch (IOException)
+            {
+                // try again after forcing finalisers to release file handles
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
                 try
                 {
-                    // Cleanup the session resources
-                    sessionData.Socket?.CleanupSession();
-
-                    // Wait a short delay to ensure all resources are released
-                    await Task.Delay(1000, cancellationToken);
-
-                    // Delete the session data folder
-                    var sessionFolderPath = Path.Combine(AppContext.BaseDirectory, sessionName);
-                    if (Directory.Exists(sessionFolderPath))
-                    {
-                        try
-                        {
-                            Directory.Delete(sessionFolderPath, true);
-                            _logger.LogInformation($"Session {sessionName} stopped and folder deleted.");
-                        }
-                        catch (Exception)
-                        {
-
-                            _logger.LogInformation($"Session {sessionName} stopped and folder NOT deleted.");
-                        }
-
-                    }
+                    Directory.Delete(folder, true);
+                    _logger.LogInformation($"Session {sessionName} stopped (2nd attempt) and folder deleted.");
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Error while stopping session {sessionName}.");
+                    _logger.LogWarning(ex, $"Session {sessionName} stopped but folder still locked.");
                 }
             }
-            else
-            {
-                _logger.LogWarning($"Session {sessionName} not found.");
-            }
+            //if (_sessions.TryRemove(sessionName, out var sessionData))
+            //{
+            //    try
+            //    {
+            //        // Cleanup the session resources
+            //        sessionData.Socket?.CleanupSession();
+
+            //        // Wait a short delay to ensure all resources are released
+            //        await Task.Delay(1000, cancellationToken);
+
+            //        // Delete the session data folder
+            //        var sessionFolderPath = Path.Combine(AppContext.BaseDirectory, sessionName);
+            //        if (Directory.Exists(sessionFolderPath))
+            //        {
+            //            try
+            //            {
+            //                Directory.Delete(sessionFolderPath, true);
+            //                _logger.LogInformation($"Session {sessionName} stopped and folder deleted.");
+            //            }
+            //            catch (Exception)
+            //            {
+
+            //                _logger.LogInformation($"Session {sessionName} stopped and folder NOT deleted.");
+            //            }
+
+            //        }
+            //    }
+            //    catch (Exception ex)
+            //    {
+            //        _logger.LogError(ex, $"Error while stopping session {sessionName}.");
+            //    }
+            //}
+            //else
+            //{
+            //    _logger.LogWarning($"Session {sessionName} not found.");
+            //}
         }
 
 
@@ -361,6 +392,26 @@ namespace WhatsAppApi.Services
         public bool TryGetSessionData(string sessionName, out SessionData sessionData)
         {
             return _sessions.TryGetValue(sessionName, out sessionData);
+        }
+
+
+        // Add after the class' private fields or right before the closing brace
+        private static async Task LogoutAndWaitAsync(WASocket socket,
+                                                     CancellationToken token)
+        {
+            // Tell WhatsApp to terminate the MD session on its side
+            socket.PublicEnd(); // emits DisconnectReason.LoggedOut
+
+            // Wait (max 5 s) until the connection state is "close"
+            var closed = new TaskCompletionSource();
+            void Handler(object? _, ConnectionState state)
+            {
+                if (state.Connection == WAConnectionState.Close)
+                    closed.TrySetResult();
+            }
+            socket.EV.Connection.Update += Handler;
+            await Task.WhenAny(closed.Task, Task.Delay(5000, token));
+            socket.EV.Connection.Update -= Handler;
         }
 
         public class SessionData
