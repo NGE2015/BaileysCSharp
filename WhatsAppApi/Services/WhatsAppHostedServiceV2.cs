@@ -46,16 +46,34 @@ namespace WhatsAppApi.Services
             }
         }
 
-        public Task StopAsync(CancellationToken cancellationToken)
+        public async Task StopAsync(CancellationToken cancellationToken)
         {
             // Stop the timer when the application is shutting down
             _timer?.Change(Timeout.Infinite, 0);
-            return Task.CompletedTask;
+
+            // Gracefully stop all active sessions
+            var activeSessions = _whatsAppService.GetActiveSessions().ToList();
+            var stopTasks = activeSessions.Select(sessionName =>
+                _whatsAppService.StopSessionAsync(sessionName, cancellationToken));
+
+            try
+            {
+                await Task.WhenAll(stopTasks);
+            }
+            catch (Exception ex)
+            {
+                // Log but don't throw during shutdown
+                Console.WriteLine($"Error during graceful shutdown: {ex.Message}");
+            }
         }
 
         public void Dispose()
         {
             _timer?.Dispose();
+            if (_whatsAppService is IDisposable disposableService)
+            {
+                disposableService.Dispose();
+            }
         }
     }
 }

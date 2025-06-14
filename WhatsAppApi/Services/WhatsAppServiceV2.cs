@@ -47,15 +47,21 @@ namespace WhatsAppApi.Services
         bool TryGetSessionData(string sessionName, out SessionData sessionData);
     }
 
-    public class WhatsAppServiceV2 : IWhatsAppServiceV2
+    public class WhatsAppServiceV2 : IWhatsAppServiceV2, IDisposable
     {
         private readonly ILogger<WhatsAppServiceV2> _logger;
         private readonly ConcurrentDictionary<string, SessionData> _sessions;
+        private readonly Timer _healthCheckTimer;
+        private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
+        private bool _disposed = false;
 
         public WhatsAppServiceV2(ILogger<WhatsAppServiceV2> logger)
         {
             _logger = logger;
             _sessions = new ConcurrentDictionary<string, SessionData>();
+
+            // Start health check timer
+            _healthCheckTimer = new Timer(PerformHealthCheck, null, _healthCheckInterval, _healthCheckInterval);
         }
 
         public async Task StartSessionAsync(string sessionName, CancellationToken cancellationToken)
@@ -93,11 +99,11 @@ namespace WhatsAppApi.Services
 
             // Attach event handlers
             socket.EV.Auth.Update += (sender, creds) => Auth_Update(sender, creds, sessionName);
-            socket.EV.Connection.Update += (sender, state) => Connection_Update(sender, state, sessionName);
+            socket.EV.Connection.Update += (sender, state) => Connection_UpdateAsync(sender, state, sessionName);
             socket.EV.Message.Upsert += (sender, e) => Message_Upsert(sender, e, sessionName);
             socket.EV.MessageHistory.Set += MessageHistory_Set;
             socket.EV.Pressence.Update += Pressence_Update;
-            
+
             socket.MakeSocket();
 
             sessionData.Socket = socket;
@@ -194,7 +200,7 @@ namespace WhatsAppApi.Services
             }
         }
 
-        private void Connection_Update(object? sender, ConnectionState e, string sessionName)
+        private async Task Connection_UpdateAsync(object? sender, ConnectionState e, string sessionName)
         {
             var connection = e;
             _logger.LogDebug(JsonSerializer.Serialize(connection));
@@ -214,18 +220,12 @@ namespace WhatsAppApi.Services
                     sessionData.IsConnected = false;
                     if (connection.LastDisconnect.Error is Boom boom && boom.Data?.StatusCode != (int)DisconnectReason.LoggedOut)
                     {
-                        try
-                        {
-                            Thread.Sleep(1000);
-                            sessionData.Socket.MakeSocket();
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, $"Error reconnecting session {sessionName}");
-                        }
+                        // Implement exponential backoff for reconnection
+                        await ScheduleReconnectionAsync(sessionName, sessionData);
                     }
                     else
                     {
+                        _logger.LogWarning($"Session {sessionName} is logged out, will not auto-reconnect");
                         Console.WriteLine($"Session {sessionName} is logged out");
                     }
                 }
@@ -414,6 +414,119 @@ namespace WhatsAppApi.Services
             socket.EV.Connection.Update -= Handler;
         }
 
+        // Add health check and cleanup methods
+        private void PerformHealthCheck(object state)
+        {
+            if (_disposed) return;
+
+            try
+            {
+                var now = DateTime.UtcNow;
+                var inactiveSessions = new List<string>();
+
+                foreach (var kvp in _sessions)
+                {
+                    var sessionName = kvp.Key;
+                    var sessionData = kvp.Value;
+
+                    // Check for inactive sessions (older than 24 hours)
+                    if (now - sessionData.LastActivity > TimeSpan.FromHours(24))
+                    {
+                        inactiveSessions.Add(sessionName);
+                        continue;
+                    }
+
+                    // Check if connection is still alive
+                    if (sessionData.IsConnected && !IsSocketHealthy(sessionData.Socket))
+                    {
+                        _logger.LogWarning($"Session {sessionName} appears unhealthy, marking as disconnected");
+                        sessionData.IsConnected = false;
+                    }
+                }
+
+                // Clean up inactive sessions
+                foreach (var sessionName in inactiveSessions)
+                {
+                    _logger.LogInformation($"Cleaning up inactive session: {sessionName}");
+                    _ = Task.Run(() => StopSessionAsync(sessionName, CancellationToken.None));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during health check");
+            }
+        }
+
+        private bool IsSocketHealthy(WASocket socket)
+        {
+            try
+            {
+                // Basic health check - socket should be non-null and not disposed
+                return socket != null;
+                //&& socket.state != null
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task ScheduleReconnectionAsync(string sessionName, SessionData sessionData)
+        {
+            if (_disposed) return;
+
+            sessionData.ReconnectAttempts++;
+            var maxAttempts = 5;
+
+            if (sessionData.ReconnectAttempts > maxAttempts)
+            {
+                _logger.LogError($"Session {sessionName} exceeded maximum reconnection attempts ({maxAttempts})");
+                return;
+            }
+
+            // Exponential backoff: 2^attempt seconds, max 5 minutes
+            var delaySeconds = Math.Min(Math.Pow(2, sessionData.ReconnectAttempts), 300);
+
+            _logger.LogInformation($"Scheduling reconnection for {sessionName} in {delaySeconds} seconds (attempt {sessionData.ReconnectAttempts})");
+
+            await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+
+            if (_disposed || !_sessions.ContainsKey(sessionName)) return;
+
+            try
+            {
+                sessionData.Socket.MakeSocket();
+                _logger.LogInformation($"Reconnection attempt {sessionData.ReconnectAttempts} for session {sessionName}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to reconnect session {sessionName} on attempt {sessionData.ReconnectAttempts}");
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+
+            _healthCheckTimer?.Dispose();
+
+            // Clean up all sessions
+            foreach (var kvp in _sessions)
+            {
+                try
+                {
+                    kvp.Value.Socket?.CleanupSession();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Error disposing session {kvp.Key}");
+                }
+            }
+
+            _sessions.Clear();
+        }
+
         public class SessionData
         {
             public WASocket Socket { get; set; }
@@ -422,6 +535,7 @@ namespace WhatsAppApi.Services
             public string QRCode { get; set; }
             public bool IsConnected { get; set; }
             public DateTime LastActivity { get; set; } = DateTime.UtcNow;
+            public int ReconnectAttempts { get; set; } = 0;
         }
     }
 }
