@@ -68,8 +68,29 @@ namespace WhatsAppApi.Services
         {
             if (_sessions.ContainsKey(sessionName))
             {
-                _logger.LogWarning($"Session {sessionName} already exists.");
-                return;
+                _logger.LogWarning($"Session {sessionName} already exists. Attempting to restore connection.");
+                
+                // Try to restore the existing session if it's disconnected
+                if (_sessions.TryGetValue(sessionName, out var existingSession) && !existingSession.IsConnected)
+                {
+                    try
+                    {
+                        existingSession.Socket.MakeSocket();
+                        existingSession.LastActivity = DateTime.UtcNow;
+                        _logger.LogInformation($"Session {sessionName} connection restored.");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"Failed to restore session {sessionName}, creating new session.");
+                        // Remove the failed session and continue to create a new one
+                        _sessions.TryRemove(sessionName, out _);
+                    }
+                }
+                else
+                {
+                    return; // Session exists and is connected
+                }
             }
 
             var sessionData = new SessionData();
@@ -429,8 +450,10 @@ namespace WhatsAppApi.Services
                     var sessionName = kvp.Key;
                     var sessionData = kvp.Value;
 
-                    // Check for inactive sessions (older than 24 hours)
-                    if (now - sessionData.LastActivity > TimeSpan.FromHours(24))
+                    // Check for inactive sessions (older than 7 days instead of 24 hours)
+                    // and only if the session is not connected
+                    if (!sessionData.IsConnected && 
+                        now - sessionData.LastActivity > TimeSpan.FromDays(7))
                     {
                         inactiveSessions.Add(sessionName);
                         continue;
@@ -441,6 +464,12 @@ namespace WhatsAppApi.Services
                     {
                         _logger.LogWarning($"Session {sessionName} appears unhealthy, marking as disconnected");
                         sessionData.IsConnected = false;
+                    }
+                    
+                    // Update activity for connected sessions to keep them alive
+                    if (sessionData.IsConnected)
+                    {
+                        sessionData.LastActivity = DateTime.UtcNow;
                     }
                 }
 
