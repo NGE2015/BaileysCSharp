@@ -53,6 +53,10 @@ namespace WhatsAppApi.Services
         private readonly ConcurrentDictionary<string, SessionData> _sessions;
         private readonly Timer _healthCheckTimer;
         private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _qrRequestSemaphores = new();
+        private const int MaxSessionsPerService = 100;
+        private const int MaxInactiveHours = 72; // 3 days for inactive sessions
+        private const int MaxConnectedDays = 30; // 30 days for connected sessions
         private bool _disposed = false;
 
         public WhatsAppServiceV2(ILogger<WhatsAppServiceV2> logger)
@@ -389,11 +393,27 @@ namespace WhatsAppApi.Services
 
         public string GetAsciiQRCode(string sessionName)
         {
-            if (_sessions.TryGetValue(sessionName, out var sessionData))
+            // REQUEST DEDUPLICATION: Prevent concurrent QR requests for same session
+            var semaphore = _qrRequestSemaphores.GetOrAdd(sessionName, _ => new SemaphoreSlim(1, 1));
+            
+            if (!semaphore.Wait(100)) // 100ms timeout
             {
-                return sessionData.QRCode;
+                _logger.LogWarning($"QR code request for session {sessionName} timed out due to concurrent request");
+                return null;
             }
-            return null;
+
+            try
+            {
+                if (_sessions.TryGetValue(sessionName, out var sessionData))
+                {
+                    return sessionData.QRCode;
+                }
+                return null;
+            }
+            finally
+            {
+                semaphore.Release();
+            }
         }
 
         public bool IsConnected(string sessionName)
@@ -443,41 +463,97 @@ namespace WhatsAppApi.Services
             try
             {
                 var now = DateTime.UtcNow;
-                var inactiveSessions = new List<string>();
+                var sessionsToCleanup = new List<string>();
+                var sessionCount = _sessions.Count;
+
+                _logger.LogDebug($"Health check: {sessionCount} active sessions");
+
+                // Check for session limit enforcement
+                if (sessionCount > MaxSessionsPerService)
+                {
+                    _logger.LogWarning($"Session count ({sessionCount}) exceeds maximum ({MaxSessionsPerService}), enforcing cleanup");
+                }
 
                 foreach (var kvp in _sessions)
                 {
                     var sessionName = kvp.Key;
                     var sessionData = kvp.Value;
+                    var timeSinceActivity = now - sessionData.LastActivity;
 
-                    // Check for inactive sessions (older than 7 days instead of 24 hours)
-                    // and only if the session is not connected
-                    if (!sessionData.IsConnected && 
-                        now - sessionData.LastActivity > TimeSpan.FromDays(7))
+                    bool shouldCleanup = false;
+                    string reason = "";
+
+                    // ENHANCED CLEANUP LOGIC:
+                    // 1. Inactive sessions: 72 hours (3 days)
+                    if (!sessionData.IsConnected && timeSinceActivity > TimeSpan.FromHours(MaxInactiveHours))
                     {
-                        inactiveSessions.Add(sessionName);
-                        continue;
+                        shouldCleanup = true;
+                        reason = $"inactive for {timeSinceActivity.TotalHours:F1} hours";
                     }
-
-                    // Check if connection is still alive
-                    if (sessionData.IsConnected && !IsSocketHealthy(sessionData.Socket))
+                    // 2. Connected sessions: 30 days (prevent indefinite accumulation)
+                    else if (sessionData.IsConnected && timeSinceActivity > TimeSpan.FromDays(MaxConnectedDays))
+                    {
+                        shouldCleanup = true;
+                        reason = $"connected but stale for {timeSinceActivity.TotalDays:F1} days";
+                    }
+                    // 3. Unhealthy connected sessions
+                    else if (sessionData.IsConnected && !IsSocketHealthy(sessionData.Socket))
                     {
                         _logger.LogWarning($"Session {sessionName} appears unhealthy, marking as disconnected");
                         sessionData.IsConnected = false;
+                        // Don't cleanup immediately, give it a chance to reconnect
                     }
-                    
-                    // Update activity for connected sessions to keep them alive
-                    if (sessionData.IsConnected)
+                    // 4. Force cleanup if over session limit (oldest first)
+                    else if (sessionCount > MaxSessionsPerService)
                     {
+                        shouldCleanup = true;
+                        reason = "session limit exceeded";
+                    }
+
+                    if (shouldCleanup)
+                    {
+                        sessionsToCleanup.Add(sessionName);
+                        _logger.LogInformation($"Scheduling cleanup for session {sessionName}: {reason}");
+                    }
+                    else if (sessionData.IsConnected)
+                    {
+                        // Keep connected sessions alive by updating activity
                         sessionData.LastActivity = DateTime.UtcNow;
                     }
                 }
 
-                // Clean up inactive sessions
-                foreach (var sessionName in inactiveSessions)
+                // Clean up sessions (async to avoid blocking health check)
+                foreach (var sessionName in sessionsToCleanup)
                 {
-                    _logger.LogInformation($"Cleaning up inactive session: {sessionName}");
-                    _ = Task.Run(() => StopSessionAsync(sessionName, CancellationToken.None));
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await StopSessionAsync(sessionName, CancellationToken.None);
+                            _logger.LogInformation($"Successfully cleaned up session: {sessionName}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"Error cleaning up session {sessionName}");
+                        }
+                    });
+                }
+
+                // Clean up orphaned semaphores
+                var orphanedSemaphores = _qrRequestSemaphores.Keys.Except(_sessions.Keys).ToList();
+                foreach (var orphaned in orphanedSemaphores)
+                {
+                    if (_qrRequestSemaphores.TryRemove(orphaned, out var semaphore))
+                    {
+                        semaphore.Dispose();
+                        _logger.LogDebug($"Cleaned up orphaned semaphore for session: {orphaned}");
+                    }
+                }
+
+                // Log memory usage info
+                if (sessionCount > 10) // Only log if significant number of sessions
+                {
+                    _logger.LogInformation($"Health check complete: {sessionCount} sessions, {sessionsToCleanup.Count} marked for cleanup, {_qrRequestSemaphores.Count} semaphores");
                 }
             }
             catch (Exception ex)
@@ -538,6 +614,8 @@ namespace WhatsAppApi.Services
             if (_disposed) return;
             _disposed = true;
 
+            _logger.LogInformation("WhatsAppServiceV2 disposing: cleaning up resources");
+
             _healthCheckTimer?.Dispose();
 
             // Clean up all sessions
@@ -554,6 +632,22 @@ namespace WhatsAppApi.Services
             }
 
             _sessions.Clear();
+
+            // Clean up all semaphores
+            foreach (var kvp in _qrRequestSemaphores)
+            {
+                try
+                {
+                    kvp.Value.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Error disposing semaphore for session {kvp.Key}");
+                }
+            }
+
+            _qrRequestSemaphores.Clear();
+            _logger.LogInformation("WhatsAppServiceV2 disposal complete");
         }
 
         public class SessionData

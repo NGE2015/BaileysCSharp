@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using WhatsAppApi.Services;
+using WhatsAppApi.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 // Configure logging providers after the builder is created:
@@ -79,6 +80,9 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors("AllowBlazorClient");
 app.UseCors("AllowBlazorClientRubyManager");
+
+// Add rate limiting middleware before authorization
+app.UseMiddleware<RateLimitingMiddleware>();
 
 app.UseHttpsRedirection();
 app.UseAuthorization();
