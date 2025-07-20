@@ -72,6 +72,9 @@ namespace WhatsAppApi.Services
 
             // Start health check timer
             _healthCheckTimer = new Timer(PerformHealthCheck, null, _healthCheckInterval, _healthCheckInterval);
+            
+            // Auto-restore existing sessions on startup
+            _ = Task.Run(RestoreExistingSessionsAsync);
         }
 
         public async Task StartSessionAsync(string sessionName, CancellationToken cancellationToken)
@@ -711,6 +714,103 @@ namespace WhatsAppApi.Services
                 return "contact";
 
             return "unknown";
+        }
+
+        /// <summary>
+        /// Automatically restore sessions from existing credential files on service startup.
+        /// This allows WhatsApp sessions to survive service restarts.
+        /// </summary>
+        private async Task RestoreExistingSessionsAsync()
+        {
+            try
+            {
+                _logger.LogInformation("Scanning for existing WhatsApp sessions to restore...");
+                
+                // Wait a short delay to ensure service is fully initialized
+                await Task.Delay(2000);
+                
+                var config = new SocketConfig();
+                var cacheRoot = config.CacheRoot;
+                
+                if (!Directory.Exists(cacheRoot))
+                {
+                    _logger.LogDebug($"Cache directory does not exist: {cacheRoot}");
+                    return;
+                }
+                
+                // Find all credential files in the cache directory
+                var credentialFiles = Directory.GetFiles(cacheRoot, "*_creds.json", SearchOption.TopDirectoryOnly);
+                
+                if (credentialFiles.Length == 0)
+                {
+                    _logger.LogInformation("No existing WhatsApp sessions found to restore");
+                    return;
+                }
+                
+                _logger.LogInformation($"Found {credentialFiles.Length} existing WhatsApp sessions to restore");
+                
+                // Restore each session found
+                var restorationTasks = new List<Task>();
+                
+                foreach (var credFile in credentialFiles)
+                {
+                    try
+                    {
+                        // Extract session name from filename: "sessionName_creds.json"
+                        var fileName = Path.GetFileNameWithoutExtension(credFile);
+                        if (fileName.EndsWith("_creds"))
+                        {
+                            var sessionName = fileName.Substring(0, fileName.Length - "_creds".Length);
+                            
+                            if (!string.IsNullOrEmpty(sessionName))
+                            {
+                                _logger.LogInformation($"Restoring WhatsApp session: {sessionName}");
+                                
+                                // Restore session asynchronously with delay to avoid overwhelming
+                                var sessionRestorationTask = Task.Run(async () =>
+                                {
+                                    try
+                                    {
+                                        // Add small delay between session restorations to prevent rate limiting
+                                        await Task.Delay(Random.Shared.Next(500, 2000));
+                                        await StartSessionAsync(sessionName, CancellationToken.None);
+                                        _logger.LogInformation($"Successfully restored session: {sessionName}");
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogWarning(ex, $"Failed to restore session {sessionName}: {ex.Message}");
+                                    }
+                                });
+                                
+                                restorationTasks.Add(sessionRestorationTask);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, $"Error processing credential file {credFile}: {ex.Message}");
+                    }
+                }
+                
+                // Wait for all restoration attempts to complete (with timeout)
+                var timeoutTask = Task.Delay(TimeSpan.FromMinutes(5));
+                var restorationTask = Task.WhenAll(restorationTasks);
+                
+                var completedTask = await Task.WhenAny(restorationTask, timeoutTask);
+                
+                if (completedTask == timeoutTask)
+                {
+                    _logger.LogWarning("Session restoration timed out after 5 minutes");
+                }
+                else
+                {
+                    _logger.LogInformation($"Session restoration completed. Active sessions: {_sessions.Count}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during session restoration on startup");
+            }
         }
 
         // Add after the class' private fields or right before the closing brace

@@ -79,11 +79,14 @@ namespace WhatsAppApi.Middleware
         {
             var pathValue = path.Value?.ToLower() ?? "";
 
-            if (pathValue.Contains("getasciiQRcode"))
+            if (pathValue.Contains("getasciiQRcode") || pathValue.Contains("forceregenerateqrcode"))
                 return EndpointType.QRCode;
             
             if (pathValue.Contains("startsession") || pathValue.Contains("stopsession"))
                 return EndpointType.SessionOperation;
+            
+            if (pathValue.Contains("connectionstatus"))
+                return EndpointType.ConnectionStatus;
             
             if (pathValue.Contains("sendmessage") || pathValue.Contains("sendmedia"))
                 return EndpointType.Messaging;
@@ -109,6 +112,7 @@ namespace WhatsAppApi.Middleware
                 {
                     EndpointType.QRCode => _rateLimitOptions.MaxQRRequestsPerMinute,
                     EndpointType.SessionOperation => _rateLimitOptions.MaxSessionOperationsPerMinute,
+                    EndpointType.ConnectionStatus => _rateLimitOptions.MaxConnectionStatusPerMinute,
                     _ => _rateLimitOptions.MaxRequestsPerMinute
                 };
 
@@ -215,6 +219,7 @@ namespace WhatsAppApi.Middleware
         General,
         QRCode,
         SessionOperation,
+        ConnectionStatus,
         Messaging
     }
 }
