@@ -729,8 +729,9 @@ namespace WhatsAppApi.Services
                 // Wait a short delay to ensure service is fully initialized
                 await Task.Delay(2000);
                 
-                var config = new SocketConfig();
-                var cacheRoot = config.CacheRoot;
+                // Get the cache root directory by using the same logic as SocketConfig but without requiring SessionName
+                var assemblyLocation = Path.GetDirectoryName(typeof(WASocket).Assembly.Location);
+                var cacheRoot = assemblyLocation ?? Environment.CurrentDirectory;
                 
                 if (!Directory.Exists(cacheRoot))
                 {
