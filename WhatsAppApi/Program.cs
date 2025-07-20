@@ -36,7 +36,13 @@ builder.Services.AddCors(options =>
 
 });
 
-builder.Services.AddSingleton<IWhatsAppServiceV2, WhatsAppServiceV2>();
+// Configure HttpClient for CRM API calls
+builder.Services.AddHttpClient<IWhatsAppServiceV2, WhatsAppServiceV2>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.Add("User-Agent", "WhatsAppAPI/1.0");
+});
+
 builder.Services.AddHostedService<WhatsAppHostedServiceV2>();
 
 builder.Services.AddEndpointsApiExplorer();

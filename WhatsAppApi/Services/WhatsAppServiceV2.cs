@@ -51,6 +51,7 @@ namespace WhatsAppApi.Services
     public class WhatsAppServiceV2 : IWhatsAppServiceV2, IDisposable
     {
         private readonly ILogger<WhatsAppServiceV2> _logger;
+        private readonly HttpClient _httpClient;
         private readonly ConcurrentDictionary<string, SessionData> _sessions;
         private readonly Timer _healthCheckTimer;
         private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
@@ -60,9 +61,10 @@ namespace WhatsAppApi.Services
         private const int MaxConnectedDays = 30; // 30 days for connected sessions
         private bool _disposed = false;
 
-        public WhatsAppServiceV2(ILogger<WhatsAppServiceV2> logger)
+        public WhatsAppServiceV2(ILogger<WhatsAppServiceV2> logger, HttpClient httpClient)
         {
             _logger = logger;
+            _httpClient = httpClient;
             _sessions = new ConcurrentDictionary<string, SessionData>();
 
             // Start health check timer
@@ -278,7 +280,18 @@ namespace WhatsAppApi.Services
                         if (msg.Message == null)
                             continue;
 
-                        // Handle incoming messages here
+                        // Save incoming messages to CRM asynchronously (fire-and-forget)
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await SaveMessageToCrmAsync(sessionName, msg);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, $"Failed to save message to CRM for session {sessionName}");
+                            }
+                        });
 
                         // Update LastActivity
                         sessionData.LastActivity = DateTime.UtcNow;
@@ -526,6 +539,174 @@ namespace WhatsAppApi.Services
             return _sessions.TryGetValue(sessionName, out sessionData);
         }
 
+        /// <summary>
+        /// Saves incoming message data to the CRM system asynchronously without blocking message processing
+        /// </summary>
+        private async Task SaveMessageToCrmAsync(string sessionName, WebMessageInfo messageInfo)
+        {
+            try
+            {
+                // Only process incoming messages (not outgoing)
+                if (messageInfo.Key?.FromMe == true)
+                {
+                    return; // Skip outgoing messages
+                }
+
+                // Extract message data
+                var senderPhone = ExtractPhoneNumber(messageInfo.Key?.RemoteJid);
+                var messageContent = ExtractMessageContent(messageInfo.Message);
+                var messageType = GetMessageType(messageInfo.Message);
+                var messageId = messageInfo.Key?.Id;
+                var remoteJid = messageInfo.Key?.RemoteJid;
+                var timestamp = messageInfo.MessageTimestamp > 0 ? (long)messageInfo.MessageTimestamp : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                var receivedAt = DateTimeOffset.FromUnixTimeSeconds(timestamp).ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+                // Skip if no content to save
+                if (string.IsNullOrEmpty(messageContent) || string.IsNullOrEmpty(senderPhone))
+                {
+                    _logger.LogDebug($"Skipping message save - missing content or sender for session {sessionName}");
+                    return;
+                }
+
+                // Prepare payload for CRM API
+                var payload = new
+                {
+                    clientExternalId = sessionName, // Using session name as tenant ID
+                    senderPhone = senderPhone,
+                    messageContent = messageContent,
+                    messageType = messageType,
+                    remoteJid = remoteJid,
+                    messageId = messageId,
+                    receivedAt = receivedAt
+                };
+
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+
+                _logger.LogDebug($"Sending message to CRM for session {sessionName}: {senderPhone} - {messageContent.Substring(0, Math.Min(50, messageContent.Length))}...");
+
+                // Send to CRM API with timeout
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var response = await _httpClient.PostAsync("https://whatsapp.rubymanager.app/api/WhatsAppV2/saveMessage", content, cts.Token);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug($"Successfully saved message to CRM for session {sessionName}, message ID: {messageId}");
+                }
+                else
+                {
+                    var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning($"CRM API returned {response.StatusCode} for session {sessionName}: {responseBody}");
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                _logger.LogWarning($"CRM API call timed out for session {sessionName}");
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, $"Network error sending message to CRM for session {sessionName}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Unexpected error saving message to CRM for session {sessionName}");
+            }
+        }
+
+        /// <summary>
+        /// Extracts phone number from WhatsApp JID format
+        /// </summary>
+        private string ExtractPhoneNumber(string remoteJid)
+        {
+            if (string.IsNullOrEmpty(remoteJid))
+                return null;
+
+            // Extract phone number from formats like "1234567890@s.whatsapp.net"
+            var atIndex = remoteJid.IndexOf('@');
+            return atIndex > 0 ? remoteJid.Substring(0, atIndex) : remoteJid;
+        }
+
+        /// <summary>
+        /// Extracts text content from WhatsApp message
+        /// </summary>
+        private string ExtractMessageContent(Message message)
+        {
+            if (message == null)
+                return null;
+
+            // Text message
+            if (!string.IsNullOrEmpty(message.Conversation))
+                return message.Conversation;
+
+            // Extended text message
+            if (message.ExtendedTextMessage?.Text != null)
+                return message.ExtendedTextMessage.Text;
+
+            // Image with caption
+            if (message.ImageMessage?.Caption != null)
+                return message.ImageMessage.Caption;
+
+            // Video with caption
+            if (message.VideoMessage?.Caption != null)
+                return message.VideoMessage.Caption;
+
+            // Document with caption
+            if (message.DocumentMessage?.Caption != null)
+                return message.DocumentMessage.Caption;
+
+            // For media messages without captions, return a descriptive message
+            if (message.ImageMessage != null)
+                return "[Image]";
+
+            if (message.VideoMessage != null)
+                return "[Video]";
+
+            if (message.AudioMessage != null)
+                return "[Audio]";
+
+            if (message.DocumentMessage != null)
+                return $"[Document: {message.DocumentMessage.Title ?? "Unknown"}]";
+
+            if (message.LocationMessage != null)
+                return "[Location]";
+
+            if (message.ContactMessage != null)
+                return $"[Contact: {message.ContactMessage.DisplayName ?? "Unknown"}]";
+
+            return "[Unknown message type]";
+        }
+
+        /// <summary>
+        /// Determines the message type for CRM storage
+        /// </summary>
+        private string GetMessageType(Message message)
+        {
+            if (message == null)
+                return "unknown";
+
+            if (!string.IsNullOrEmpty(message.Conversation) || message.ExtendedTextMessage != null)
+                return "text";
+
+            if (message.ImageMessage != null)
+                return "image";
+
+            if (message.VideoMessage != null)
+                return "video";
+
+            if (message.AudioMessage != null)
+                return "audio";
+
+            if (message.DocumentMessage != null)
+                return "document";
+
+            if (message.LocationMessage != null)
+                return "location";
+
+            if (message.ContactMessage != null)
+                return "contact";
+
+            return "unknown";
+        }
 
         // Add after the class' private fields or right before the closing brace
         private static async Task LogoutAndWaitAsync(WASocket socket,
