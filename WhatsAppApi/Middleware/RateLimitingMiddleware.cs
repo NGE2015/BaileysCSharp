@@ -12,26 +12,26 @@ namespace WhatsAppApi.Middleware
         private readonly ConcurrentDictionary<string, ClientRateLimit> _clientLimits = new();
         private readonly Timer _cleanupTimer;
         private readonly DetailedLoggingOptions _loggingOptions;
+        private readonly RateLimitingOptions _rateLimitOptions;
 
-        // Rate limiting configuration
-        private const int MaxRequestsPerMinute = 30;
-        private const int MaxRequestsPerHour = 300;
-        private const int MaxQRRequestsPerMinute = 5; // Stricter for QR code requests
-        private const int MaxSessionOperationsPerMinute = 1000; // For start/stop session
-
-        public RateLimitingMiddleware(RequestDelegate next, ILogger<RateLimitingMiddleware> logger, IOptionsMonitor<DetailedLoggingOptions> loggingOptions)
+        public RateLimitingMiddleware(
+            RequestDelegate next, 
+            ILogger<RateLimitingMiddleware> logger, 
+            IOptionsMonitor<DetailedLoggingOptions> loggingOptions,
+            IOptionsMonitor<RateLimitingOptions> rateLimitOptions)
         {
             _next = next;
             _logger = logger;
             _loggingOptions = loggingOptions.CurrentValue;
+            _rateLimitOptions = rateLimitOptions.CurrentValue;
             
             // Cleanup expired entries every 5 minutes
             _cleanupTimer = new Timer(CleanupExpiredEntries, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
             
             if (_loggingOptions.Enabled && _loggingOptions.LogRateLimit)
             {
-                _logger.LogInformation("Rate limiting middleware initialized with limits: {MaxPerMinute}/min, {MaxPerHour}/hour", 
-                    MaxRequestsPerMinute, MaxRequestsPerHour);
+                _logger.LogInformation("Rate limiting middleware initialized with limits: {MaxPerMinute}/min, {MaxPerHour}/hour, QR: {MaxQRPerMinute}/min", 
+                    _rateLimitOptions.MaxRequestsPerMinute, _rateLimitOptions.MaxRequestsPerHour, _rateLimitOptions.MaxQRRequestsPerMinute);
             }
         }
 
@@ -104,12 +104,12 @@ namespace WhatsAppApi.Middleware
                 var recentRequests = clientLimit.Requests.Where(r => now - r <= TimeSpan.FromMinutes(1)).Count();
                 var hourlyRequests = clientLimit.Requests.Count;
 
-                // Endpoint-specific limits
+                // Endpoint-specific limits from configuration
                 var minuteLimit = endpoint switch
                 {
-                    EndpointType.QRCode => MaxQRRequestsPerMinute,
-                    EndpointType.SessionOperation => MaxSessionOperationsPerMinute,
-                    _ => MaxRequestsPerMinute
+                    EndpointType.QRCode => _rateLimitOptions.MaxQRRequestsPerMinute,
+                    EndpointType.SessionOperation => _rateLimitOptions.MaxSessionOperationsPerMinute,
+                    _ => _rateLimitOptions.MaxRequestsPerMinute
                 };
 
                 // Check rate limits
@@ -123,14 +123,14 @@ namespace WhatsAppApi.Middleware
                     return SendRateLimitResponse(context, $"Too many {endpoint} requests. Limit: {minuteLimit}/minute");
                 }
 
-                if (hourlyRequests >= MaxRequestsPerHour)
+                if (hourlyRequests >= _rateLimitOptions.MaxRequestsPerHour)
                 {
                     if (_loggingOptions.Enabled && _loggingOptions.LogRateLimit)
                     {
                         _logger.LogWarning("Hourly rate limit exceeded for client {ClientId}: {HourlyRequests} requests (limit: {MaxPerHour})", 
-                            clientId, hourlyRequests, MaxRequestsPerHour);
+                            clientId, hourlyRequests, _rateLimitOptions.MaxRequestsPerHour);
                     }
-                    return SendRateLimitResponse(context, $"Hourly request limit exceeded. Limit: {MaxRequestsPerHour}/hour");
+                    return SendRateLimitResponse(context, $"Hourly request limit exceeded. Limit: {_rateLimitOptions.MaxRequestsPerHour}/hour");
                 }
 
                 // Add current request

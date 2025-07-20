@@ -57,6 +57,10 @@ try
     builder.Services.Configure<DetailedLoggingOptions>(
         builder.Configuration.GetSection(DetailedLoggingOptions.SectionName));
 
+    // Configure rate limiting options
+    builder.Services.Configure<RateLimitingOptions>(
+        builder.Configuration.GetSection(RateLimitingOptions.SectionName));
+
     // Add logging service
     builder.Services.AddSingleton<ILoggingService, LoggingService>();
 
