@@ -591,7 +591,7 @@ namespace WhatsAppApi.Services
                 // Send to CRM API with timeout
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 var crmBaseUrl = _configuration["CrmEndpoint:BaseUrl"] ?? "https://whatsapp.rubymanager.app";
-                var crmUrl = $"{crmBaseUrl}/api/WhatsAppMessageHistoryController/saveMessage";
+                var crmUrl = $"{crmBaseUrl}/api/whatsappmessagehistory/saveMessage";
                 var response = await _httpClient.PostAsync(crmUrl, content, cts.Token);
 
                 if (response.IsSuccessStatusCode)
