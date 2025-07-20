@@ -23,6 +23,7 @@ using BaileysCSharp.Core.Models.Sending.Media;
 using System.IO;
 using BaileysCSharp.Core.Models.Sending.Media;
 using WhatsAppApi.Helper;          // <— new using
+using Microsoft.Extensions.Configuration;  // <— new using
 namespace WhatsAppApi.Services
 {
     public interface IWhatsAppServiceV2
@@ -52,6 +53,7 @@ namespace WhatsAppApi.Services
     {
         private readonly ILogger<WhatsAppServiceV2> _logger;
         private readonly HttpClient _httpClient;
+        private readonly IConfiguration _configuration;
         private readonly ConcurrentDictionary<string, SessionData> _sessions;
         private readonly Timer _healthCheckTimer;
         private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(5);
@@ -61,10 +63,11 @@ namespace WhatsAppApi.Services
         private const int MaxConnectedDays = 30; // 30 days for connected sessions
         private bool _disposed = false;
 
-        public WhatsAppServiceV2(ILogger<WhatsAppServiceV2> logger, HttpClient httpClient)
+        public WhatsAppServiceV2(ILogger<WhatsAppServiceV2> logger, HttpClient httpClient, IConfiguration configuration)
         {
             _logger = logger;
             _httpClient = httpClient;
+            _configuration = configuration;
             _sessions = new ConcurrentDictionary<string, SessionData>();
 
             // Start health check timer
@@ -587,7 +590,9 @@ namespace WhatsAppApi.Services
 
                 // Send to CRM API with timeout
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                var response = await _httpClient.PostAsync("https://whatsapp.rubymanager.app/api/WhatsAppMessageHistoryController/saveMessage", content, cts.Token);
+                var crmBaseUrl = _configuration["CrmEndpoint:BaseUrl"] ?? "https://whatsapp.rubymanager.app";
+                var crmUrl = $"{crmBaseUrl}/api/WhatsAppMessageHistoryController/saveMessage";
+                var response = await _httpClient.PostAsync(crmUrl, content, cts.Token);
 
                 if (response.IsSuccessStatusCode)
                 {
