@@ -85,8 +85,11 @@ try
 
     });
 
-    // Configure HttpClient for CRM API calls
-    builder.Services.AddHttpClient<IWhatsAppServiceV2, WhatsAppServiceV2>(client =>
+    // Register WhatsAppServiceV2 as Singleton to maintain session state
+    builder.Services.AddSingleton<IWhatsAppServiceV2, WhatsAppServiceV2>();
+
+    // Configure HttpClient for CRM API calls separately
+    builder.Services.AddHttpClient<WhatsAppServiceV2>(client =>
     {
         client.Timeout = TimeSpan.FromSeconds(30);
         client.DefaultRequestHeaders.Add("User-Agent", "WhatsAppAPI/1.0");
