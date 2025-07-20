@@ -42,6 +42,7 @@ namespace WhatsAppApi.Services
        );
         string GetQRCode(string sessionName);
         string GetAsciiQRCode(string sessionName);
+        Task<string> ForceRegenerateQRCodeAsync(string sessionName, CancellationToken cancellationToken);
         bool IsConnected(string sessionName);
         IEnumerable<string> GetActiveSessions();
         bool TryGetSessionData(string sessionName, out SessionData sessionData);
@@ -408,6 +409,96 @@ namespace WhatsAppApi.Services
                 {
                     return sessionData.QRCode;
                 }
+                return null;
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }
+
+        public async Task<string> ForceRegenerateQRCodeAsync(string sessionName, CancellationToken cancellationToken)
+        {
+            _logger.LogInformation($"Force regenerating QR code for session {sessionName}");
+
+            // REQUEST DEDUPLICATION: Prevent concurrent QR requests for same session
+            var semaphore = _qrRequestSemaphores.GetOrAdd(sessionName, _ => new SemaphoreSlim(1, 1));
+            
+            if (!await semaphore.WaitAsync(5000, cancellationToken)) // 5 second timeout
+            {
+                _logger.LogWarning($"Force QR regeneration for session {sessionName} timed out due to concurrent request");
+                return null;
+            }
+
+            try
+            {
+                // Step 1: Check if session exists and is not connected
+                if (_sessions.TryGetValue(sessionName, out var sessionData))
+                {
+                    if (sessionData.IsConnected)
+                    {
+                        _logger.LogWarning($"Cannot regenerate QR for session {sessionName} - already connected");
+                        return null;
+                    }
+
+                    // Step 2: Clear existing QR code to force regeneration
+                    sessionData.QRCode = null;
+                    _logger.LogDebug($"Cleared existing QR code for session {sessionName}");
+
+                    // Step 3: Force socket reconnection to generate new QR
+                    try
+                    {
+                        // Disconnect and reconnect the socket to trigger new QR generation
+                        sessionData.Socket?.CleanupSession();
+                        await Task.Delay(500, cancellationToken); // Brief delay for cleanup
+
+                        // Recreate the socket to trigger fresh QR generation
+                        sessionData.Socket.MakeSocket();
+                        _logger.LogDebug($"Triggered socket reconnection for session {sessionName}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"Failed to reconnect socket for session {sessionName}");
+                        // Try stopping and starting the session completely
+                        await StopSessionAsync(sessionName, cancellationToken);
+                        await StartSessionAsync(sessionName, cancellationToken);
+                    }
+                }
+                else
+                {
+                    // Session doesn't exist, create it fresh
+                    _logger.LogInformation($"Session {sessionName} not found, creating new session for QR generation");
+                    await StartSessionAsync(sessionName, cancellationToken);
+                }
+
+                // Step 4: Wait for new QR code to be generated (with timeout)
+                var maxWaitTime = TimeSpan.FromSeconds(15);
+                var startTime = DateTime.UtcNow;
+                
+                while (DateTime.UtcNow - startTime < maxWaitTime)
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                        break;
+
+                    if (_sessions.TryGetValue(sessionName, out var currentSessionData))
+                    {
+                        if (!string.IsNullOrEmpty(currentSessionData.QRCode))
+                        {
+                            _logger.LogInformation($"New QR code generated for session {sessionName}");
+                            return currentSessionData.QRCode;
+                        }
+
+                        if (currentSessionData.IsConnected)
+                        {
+                            _logger.LogInformation($"Session {sessionName} connected while waiting for QR - no QR needed");
+                            return null;
+                        }
+                    }
+
+                    await Task.Delay(500, cancellationToken);
+                }
+
+                _logger.LogWarning($"Timeout waiting for QR code generation for session {sessionName}");
                 return null;
             }
             finally

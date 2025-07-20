@@ -82,6 +82,29 @@ namespace WhatsAppApi.Controllers
             return Ok(new { AsciiQrCode = asciiQrCode });
         }
 
+        [HttpPost("forceRegenerateQRCode")]
+        public async Task<IActionResult> ForceRegenerateQRCode([FromBody] ForceRegenerateQRRequest request)
+        {
+            if (string.IsNullOrEmpty(request.SessionName))
+            {
+                return BadRequest(new { Message = "Session name is required" });
+            }
+
+            try
+            {
+                var asciiQrCode = await _whatsAppService.ForceRegenerateQRCodeAsync(request.SessionName, CancellationToken.None);
+                if (string.IsNullOrEmpty(asciiQrCode))
+                {
+                    return NotFound(new { Message = "Unable to generate new QR code" });
+                }
+                return Ok(new { AsciiQrCode = asciiQrCode });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { Message = $"Error regenerating QR code: {ex.Message}" });
+            }
+        }
+
         [HttpGet("connectionStatus")]
         public IActionResult GetConnectionStatus([FromQuery] string sessionName)
         {
@@ -120,7 +143,7 @@ namespace WhatsAppApi.Controllers
     ///   "remoteJid": "2779xxxxxxx@s.whatsapp.net",
     ///   "mediaBytes": "<base64 binary map>",
     ///   "mimeType": "image/jpeg",
-    ///   "caption": "Here’s your picture!"
+    ///   "caption": "Here's your picture!"
     /// }
     /// </summary>
     public class SendMediaRequest
@@ -130,5 +153,10 @@ namespace WhatsAppApi.Controllers
         public byte[] MediaBytes { get; set; }
         public string MimeType { get; set; }
         public string Caption { get; set; }
+    }
+
+    public class ForceRegenerateQRRequest
+    {
+        public string SessionName { get; set; }
     }
 }
