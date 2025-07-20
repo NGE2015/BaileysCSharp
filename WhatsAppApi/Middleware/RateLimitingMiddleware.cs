@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
+using Microsoft.Extensions.Options;
+using WhatsAppApi.Configuration;
 
 namespace WhatsAppApi.Middleware
 {
@@ -9,20 +11,28 @@ namespace WhatsAppApi.Middleware
         private readonly ILogger<RateLimitingMiddleware> _logger;
         private readonly ConcurrentDictionary<string, ClientRateLimit> _clientLimits = new();
         private readonly Timer _cleanupTimer;
+        private readonly DetailedLoggingOptions _loggingOptions;
 
         // Rate limiting configuration
         private const int MaxRequestsPerMinute = 30;
         private const int MaxRequestsPerHour = 300;
         private const int MaxQRRequestsPerMinute = 5; // Stricter for QR code requests
-        private const int MaxSessionOperationsPerMinute = 10; // For start/stop session
+        private const int MaxSessionOperationsPerMinute = 1000; // For start/stop session
 
-        public RateLimitingMiddleware(RequestDelegate next, ILogger<RateLimitingMiddleware> logger)
+        public RateLimitingMiddleware(RequestDelegate next, ILogger<RateLimitingMiddleware> logger, IOptionsMonitor<DetailedLoggingOptions> loggingOptions)
         {
             _next = next;
             _logger = logger;
+            _loggingOptions = loggingOptions.CurrentValue;
             
             // Cleanup expired entries every 5 minutes
             _cleanupTimer = new Timer(CleanupExpiredEntries, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+            
+            if (_loggingOptions.Enabled && _loggingOptions.LogRateLimit)
+            {
+                _logger.LogInformation("Rate limiting middleware initialized with limits: {MaxPerMinute}/min, {MaxPerHour}/hour", 
+                    MaxRequestsPerMinute, MaxRequestsPerHour);
+            }
         }
 
         public async Task InvokeAsync(HttpContext context)
@@ -105,13 +115,21 @@ namespace WhatsAppApi.Middleware
                 // Check rate limits
                 if (recentRequests >= minuteLimit)
                 {
-                    _logger.LogWarning($"Rate limit exceeded for client {clientId} on {endpoint}: {recentRequests} requests in last minute (limit: {minuteLimit})");
+                    if (_loggingOptions.Enabled && _loggingOptions.LogRateLimit)
+                    {
+                        _logger.LogWarning("Rate limit exceeded for client {ClientId} on {Endpoint}: {RecentRequests} requests in last minute (limit: {MinuteLimit})", 
+                            clientId, endpoint, recentRequests, minuteLimit);
+                    }
                     return SendRateLimitResponse(context, $"Too many {endpoint} requests. Limit: {minuteLimit}/minute");
                 }
 
                 if (hourlyRequests >= MaxRequestsPerHour)
                 {
-                    _logger.LogWarning($"Hourly rate limit exceeded for client {clientId}: {hourlyRequests} requests (limit: {MaxRequestsPerHour})");
+                    if (_loggingOptions.Enabled && _loggingOptions.LogRateLimit)
+                    {
+                        _logger.LogWarning("Hourly rate limit exceeded for client {ClientId}: {HourlyRequests} requests (limit: {MaxPerHour})", 
+                            clientId, hourlyRequests, MaxRequestsPerHour);
+                    }
                     return SendRateLimitResponse(context, $"Hourly request limit exceeded. Limit: {MaxRequestsPerHour}/hour");
                 }
 
@@ -169,7 +187,11 @@ namespace WhatsAppApi.Middleware
                     _clientLimits.TryRemove(clientId, out _);
                 }
 
-                _logger.LogDebug($"Rate limiting cleanup: {expiredClients.Count} expired clients removed, {_clientLimits.Count} active clients");
+                if (_loggingOptions.Enabled && _loggingOptions.LogRateLimit)
+                {
+                    _logger.LogDebug("Rate limiting cleanup: {ExpiredClients} expired clients removed, {ActiveClients} active clients", 
+                        expiredClients.Count, _clientLimits.Count);
+                }
             }
             catch (Exception ex)
             {

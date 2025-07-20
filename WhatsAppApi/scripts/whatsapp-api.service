@@ -1,0 +1,56 @@
+[Unit]
+Description=WhatsApp API Service (Unix Socket Only)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+User=root
+Group=root
+WorkingDirectory=/root/BaileysCSharp/WhatsAppApi
+ExecStart=/root/.dotnet/dotnet run --project /root/BaileysCSharp/WhatsAppApi/WhatsAppApi.csproj
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+
+# Environment variables - Unix socket only
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_PRINT_TELEMETRY_MESSAGE=false
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=ASPNETCORE_URLS=
+Environment=ASPNETCORE_SERVER_FEATURES_USE_NAMED_PIPES=false
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=whatsapp-api
+
+# Security - Enhanced for Unix socket deployment
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateNetwork=false
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+
+# File system access
+ReadWritePaths=/root/BaileysCSharp/WhatsAppApi/logs
+ReadWritePaths=/root/BaileysCSharp/WhatsAppApi/cache
+ReadWritePaths=/home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp
+
+# Limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Network restrictions (Unix socket only)
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

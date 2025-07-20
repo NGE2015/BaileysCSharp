@@ -5,96 +5,165 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using WhatsAppApi.Services;
 using WhatsAppApi.Middleware;
+using WhatsAppApi.Configuration;
+using Serilog;
+using Serilog.Events;
 
-var builder = WebApplication.CreateBuilder(args);
-// Configure logging providers after the builder is created:
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
-builder.Logging.SetMinimumLevel(LogLevel.Trace);
-// Load configuration from appsettings.json
-var configuration = builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true).Build();
-string unixSocketPath = configuration["Kestrel:UnixSocketPath"];
+// Configure Serilog early for startup logging
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Debug()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
+    .Enrich.FromLogContext()
+    .Enrich.WithEnvironmentName()
+    .Enrich.WithProcessId()
+    .Enrich.WithThreadId()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+    .WriteTo.File("logs/startup-.log", 
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 7,
+        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+    .CreateBootstrapLogger();
 
-// Add services
-builder.Services.AddControllers();
-builder.Services.AddCors(options =>
+try
 {
-    options.AddPolicy("AllowBlazorClient", policyBuilder =>
-        policyBuilder.WithOrigins("https://localhost:7120")
-                     .AllowAnyMethod()
-                     .AllowAnyHeader()
-                     .AllowCredentials());
-    options.AddPolicy("AllowBlazorClientRubyManager", policyBuilder =>
-    policyBuilder.WithOrigins(
-        "https://school.rubymanager.app",
-        "https://developmentschool.rubymanager.app",
-        "https://demoschool.rubymanager.app"
-    )
-    .AllowAnyMethod()
-    .AllowAnyHeader()
-    .AllowCredentials());
+    Log.Information("Starting WhatsApp API application");
 
-});
+    var builder = WebApplication.CreateBuilder(args);
 
-// Configure HttpClient for CRM API calls
-builder.Services.AddHttpClient<IWhatsAppServiceV2, WhatsAppServiceV2>(client =>
-{
-    client.Timeout = TimeSpan.FromSeconds(30);
-    client.DefaultRequestHeaders.Add("User-Agent", "WhatsAppAPI/1.0");
-});
-
-builder.Services.AddHostedService<WhatsAppHostedServiceV2>();
-
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
-builder.WebHost.ConfigureKestrel(options =>
-{
-    if (OperatingSystem.IsLinux())
+    // Replace default logging with Serilog
+    builder.Host.UseSerilog((context, services, configuration) => 
     {
+        configuration
+            .ReadFrom.Configuration(context.Configuration)
+            .ReadFrom.Services(services)
+            .Enrich.FromLogContext()
+            .Enrich.WithEnvironmentName()
+            .Enrich.WithProcessId()
+            .Enrich.WithThreadId()
+            .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+            .WriteTo.File(
+                path: context.Configuration["Logging:File:Path"] ?? "logs/whatsapp-.log",
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: context.Configuration.GetValue<int>("Logging:File:RetainedFileCountLimit", 7),
+                fileSizeLimitBytes: context.Configuration.GetValue<long>("Logging:File:FileSizeLimitBytes", 10485760),
+                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
+            // SystemdJournal will be handled by systemd service configuration
+    });
+    // Load configuration from appsettings.json
+    var configuration = builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true).Build();
+    string unixSocketPath = configuration["Kestrel:UnixSocketPath"];
+
+    // Configure detailed logging options
+    builder.Services.Configure<DetailedLoggingOptions>(
+        builder.Configuration.GetSection(DetailedLoggingOptions.SectionName));
+
+    // Add logging service
+    builder.Services.AddSingleton<ILoggingService, LoggingService>();
+
+    // Add services
+    builder.Services.AddControllers();
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("AllowBlazorClient", policyBuilder =>
+            policyBuilder.WithOrigins("https://localhost:7120")
+                         .AllowAnyMethod()
+                         .AllowAnyHeader()
+                         .AllowCredentials());
+        options.AddPolicy("AllowBlazorClientRubyManager", policyBuilder =>
+        policyBuilder.WithOrigins(
+            "https://school.rubymanager.app",
+            "https://developmentschool.rubymanager.app",
+            "https://demoschool.rubymanager.app"
+        )
+        .AllowAnyMethod()
+        .AllowAnyHeader()
+        .AllowCredentials());
+
+    });
+
+    // Configure HttpClient for CRM API calls
+    builder.Services.AddHttpClient<IWhatsAppServiceV2, WhatsAppServiceV2>(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(30);
+        client.DefaultRequestHeaders.Add("User-Agent", "WhatsAppAPI/1.0");
+    });
+
+    builder.Services.AddHostedService<WhatsAppHostedServiceV2>();
+
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen();
+
+    builder.WebHost.ConfigureKestrel(options =>
+    {
+        // Unix socket only configuration - no HTTP/HTTPS ports
+        if (string.IsNullOrEmpty(unixSocketPath))
+        {
+            throw new InvalidOperationException("Unix socket path is required. Configure Kestrel:UnixSocketPath in appsettings.json");
+        }
+
         // Delete existing Unix socket file if it exists
         if (File.Exists(unixSocketPath))
         {
             File.Delete(unixSocketPath);
-            Console.WriteLine($"Deleted existing Unix socket file: {unixSocketPath}");
+            Log.Information("Deleted existing Unix socket file: {UnixSocketPath}", unixSocketPath);
         }
 
-        // Configure Kestrel to listen on the Unix socket
-        options.ListenUnixSocket(unixSocketPath);
-        Console.WriteLine($"Listening on Unix socket: {unixSocketPath}");
-    }
-    else
+        // Ensure directory exists
+        var socketDir = Path.GetDirectoryName(unixSocketPath);
+        if (!string.IsNullOrEmpty(socketDir) && !Directory.Exists(socketDir))
+        {
+            Directory.CreateDirectory(socketDir);
+            Log.Information("Created Unix socket directory: {SocketDir}", socketDir);
+        }
+
+        // Configure Kestrel to listen ONLY on Unix socket
+        options.ListenUnixSocket(unixSocketPath, listenOptions =>
+        {
+            // Configure Unix socket specific options if needed
+            listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1AndHttp2;
+        });
+        
+        Log.Information("Listening exclusively on Unix socket: {UnixSocketPath}", unixSocketPath);
+
+        // Enable synchronous I/O for compatibility
+        options.AllowSynchronousIO = true;
+        
+        // Unix socket only - no additional configuration needed
+    });
+
+    var app = builder.Build();
+
+    // Configure the HTTP request pipeline
+    if (app.Environment.IsDevelopment())
     {
-        // Use standard HTTP URLs for non-Linux environments
-        //options.ListenLocalhost(5000);
-        //options.ListenLocalhost(5001, listenOptions => listenOptions.UseHttps());
-        //Console.WriteLine("Listening on HTTP at http://localhost:5000 and HTTPS at https://localhost:5001");
+        app.UseSwagger();
+        app.UseSwaggerUI();
     }
 
-    // Enable synchronous I/O if needed
-    options.AllowSynchronousIO = true;
-});
+    app.UseCors("AllowBlazorClient");
+    app.UseCors("AllowBlazorClientRubyManager");
 
-var app = builder.Build();
+    // Add rate limiting middleware before authorization
+    app.UseMiddleware<RateLimitingMiddleware>();
 
-// Configure the HTTP request pipeline
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    // No HTTPS redirection needed for Unix socket
+    // app.UseHttpsRedirection();
+    
+    app.UseAuthorization();
+    app.MapControllers();
+
+    Log.Information("WhatsApp API configured successfully. Starting application...");
+    app.Run();
 }
-
-app.UseCors("AllowBlazorClient");
-app.UseCors("AllowBlazorClientRubyManager");
-
-// Add rate limiting middleware before authorization
-app.UseMiddleware<RateLimitingMiddleware>();
-
-app.UseHttpsRedirection();
-app.UseAuthorization();
-app.MapControllers();
-
-app.Run();
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Application terminated unexpectedly");
+}
+finally
+{
+    Log.Information("WhatsApp API application shutting down");
+    Log.CloseAndFlush();
+}
 
 
 
