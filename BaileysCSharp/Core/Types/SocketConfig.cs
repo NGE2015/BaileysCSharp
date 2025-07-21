@@ -83,11 +83,29 @@ namespace BaileysCSharp.Core.Models
         {
             get
             {
-                var path = Path.Combine(Root, SessionName);
-                if (!Directory.Exists(path))
+                // Use fixed session storage path to ensure persistence across deployments
+                var basePath = "/home/RubyManager/web/whatsapp.rubymanager.app/sessions";
+                var path = Path.Combine(basePath, SessionName ?? "default");
+                
+                try
                 {
-                    Directory.CreateDirectory(path);
+                    if (!Directory.Exists(path))
+                    {
+                        Directory.CreateDirectory(path);
+                    }
                 }
+                catch (Exception ex)
+                {
+                    // Fallback to original behavior if fixed path fails
+                    Console.WriteLine($"Warning: Could not create session directory at {path}. Error: {ex.Message}");
+                    Console.WriteLine("Falling back to assembly-relative path.");
+                    path = Path.Combine(Root, SessionName ?? "default");
+                    if (!Directory.Exists(path))
+                    {
+                        Directory.CreateDirectory(path);
+                    }
+                }
+                
                 return path;
             }
         }

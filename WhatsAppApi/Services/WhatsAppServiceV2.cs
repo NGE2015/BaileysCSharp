@@ -112,11 +112,21 @@ namespace WhatsAppApi.Services
                 SessionName = sessionName,
             };
             config.Version = await WhatsAppApi.Helper.WaBuildHelper.GetLatestAlphaAsync();
-            var credsFile = Path.Join(config.CacheRoot, $"{sessionName}_creds.json");
+            
+            // Enhanced credential file discovery with migration support
+            var credsFile = FindOrMigrateCredentialsFile(sessionName, config.CacheRoot);
             AuthenticationCreds? authentication = null;
-            if (File.Exists(credsFile))
+            if (!string.IsNullOrEmpty(credsFile) && File.Exists(credsFile))
             {
-                authentication = AuthenticationCreds.Deserialize(File.ReadAllText(credsFile));
+                try
+                {
+                    authentication = AuthenticationCreds.Deserialize(File.ReadAllText(credsFile));
+                    _logger.LogInformation($"Successfully loaded existing credentials for session {sessionName} from {credsFile}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to deserialize credentials for session {sessionName}, creating new credentials");
+                }
             }
             authentication = authentication ?? AuthenticationUtils.InitAuthCreds();
 
@@ -729,18 +739,20 @@ namespace WhatsAppApi.Services
                 // Wait a short delay to ensure service is fully initialized
                 await Task.Delay(2000);
                 
-                // Get the cache root directory by using the same logic as SocketConfig but without requiring SessionName
+                // Get the base cache directory (where session folders are stored)
                 var assemblyLocation = Path.GetDirectoryName(typeof(WASocket).Assembly.Location);
-                var cacheRoot = assemblyLocation ?? Environment.CurrentDirectory;
+                var baseCacheRoot = assemblyLocation ?? Environment.CurrentDirectory;
                 
-                if (!Directory.Exists(cacheRoot))
+                if (!Directory.Exists(baseCacheRoot))
                 {
-                    _logger.LogDebug($"Cache directory does not exist: {cacheRoot}");
+                    _logger.LogDebug($"Base cache directory does not exist: {baseCacheRoot}");
                     return;
                 }
                 
-                // Find all credential files in the cache directory
-                var credentialFiles = Directory.GetFiles(cacheRoot, "*_creds.json", SearchOption.TopDirectoryOnly);
+                _logger.LogInformation($"Scanning for sessions in directory: {baseCacheRoot}");
+                
+                // Find all credential files in session subdirectories
+                var credentialFiles = Directory.GetFiles(baseCacheRoot, "*_creds.json", SearchOption.AllDirectories);
                 
                 if (credentialFiles.Length == 0)
                 {
@@ -749,6 +761,12 @@ namespace WhatsAppApi.Services
                 }
                 
                 _logger.LogInformation($"Found {credentialFiles.Length} existing WhatsApp sessions to restore");
+                
+                // Log all found credential files for debugging
+                foreach (var file in credentialFiles)
+                {
+                    _logger.LogDebug($"Found credential file: {file}");
+                }
                 
                 // Restore each session found
                 var restorationTasks = new List<Task>();
@@ -763,6 +781,14 @@ namespace WhatsAppApi.Services
                         {
                             var sessionName = fileName.Substring(0, fileName.Length - "_creds".Length);
                             
+                            // Also try to get session name from parent directory (more reliable)
+                            var parentDirName = Path.GetFileName(Path.GetDirectoryName(credFile));
+                            if (!string.IsNullOrEmpty(parentDirName) && parentDirName == sessionName)
+                            {
+                                // This confirms the session name matches the directory structure
+                                _logger.LogDebug($"Found session credential file: {credFile} for session: {sessionName}");
+                            }
+                            
                             if (!string.IsNullOrEmpty(sessionName))
                             {
                                 _logger.LogInformation($"Restoring WhatsApp session: {sessionName}");
@@ -773,7 +799,11 @@ namespace WhatsAppApi.Services
                                     try
                                     {
                                         // Add small delay between session restorations to prevent rate limiting
-                                        await Task.Delay(Random.Shared.Next(500, 2000));
+                                        var delayMs = Random.Shared.Next(500, 2000);
+                                        _logger.LogDebug($"Waiting {delayMs}ms before restoring session: {sessionName}");
+                                        await Task.Delay(delayMs);
+                                        
+                                        _logger.LogInformation($"Starting restoration for session: {sessionName}");
                                         await StartSessionAsync(sessionName, CancellationToken.None);
                                         _logger.LogInformation($"Successfully restored session: {sessionName}");
                                     }
@@ -1026,6 +1056,115 @@ namespace WhatsAppApi.Services
 
             _qrRequestSemaphores.Clear();
             _logger.LogInformation("WhatsAppServiceV2 disposal complete");
+        }
+
+        /// <summary>
+        /// Finds credentials file in current or legacy locations, migrating if necessary
+        /// </summary>
+        private string FindOrMigrateCredentialsFile(string sessionName, string newCacheRoot)
+        {
+            var primaryCredsFile = Path.Join(newCacheRoot, $"{sessionName}_creds.json");
+            
+            // If file already exists in new location, use it
+            if (File.Exists(primaryCredsFile))
+            {
+                _logger.LogDebug($"Using existing credentials from new location: {primaryCredsFile}");
+                return primaryCredsFile;
+            }
+
+            // Search for credentials in potential legacy locations
+            var assemblyRoot = Path.GetDirectoryName(typeof(BaileysCSharp.Core.BaseSocket).Assembly.Location);
+            var legacyLocations = new[]
+            {
+                Path.Join(assemblyRoot, sessionName, $"{sessionName}_creds.json"),
+                Path.Join("/home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp", sessionName, $"{sessionName}_creds.json"),
+                Path.Join(AppContext.BaseDirectory, sessionName, $"{sessionName}_creds.json"),
+                // Check if files exist in current working directory structure
+                Path.Join(Environment.CurrentDirectory, sessionName, $"{sessionName}_creds.json")
+            };
+
+            foreach (var legacyPath in legacyLocations)
+            {
+                if (File.Exists(legacyPath))
+                {
+                    try
+                    {
+                        _logger.LogInformation($"Found credentials in legacy location: {legacyPath}");
+                        _logger.LogInformation($"Migrating credentials to new location: {primaryCredsFile}");
+                        
+                        // Ensure new directory exists
+                        Directory.CreateDirectory(Path.GetDirectoryName(primaryCredsFile));
+                        
+                        // Copy credential file
+                        File.Copy(legacyPath, primaryCredsFile, overwrite: true);
+                        
+                        // Try to migrate entire session directory if possible
+                        var legacySessionDir = Path.GetDirectoryName(legacyPath);
+                        var newSessionDir = Path.GetDirectoryName(primaryCredsFile);
+                        
+                        if (legacySessionDir != newSessionDir && Directory.Exists(legacySessionDir))
+                        {
+                            foreach (var file in Directory.GetFiles(legacySessionDir))
+                            {
+                                var fileName = Path.GetFileName(file);
+                                var destFile = Path.Join(newSessionDir, fileName);
+                                
+                                if (!File.Exists(destFile))
+                                {
+                                    File.Copy(file, destFile);
+                                    _logger.LogDebug($"Migrated session file: {fileName}");
+                                }
+                            }
+                            
+                            // Migrate subdirectories (keys, state, etc.)
+                            foreach (var dir in Directory.GetDirectories(legacySessionDir))
+                            {
+                                var dirName = Path.GetFileName(dir);
+                                var destDir = Path.Join(newSessionDir, dirName);
+                                
+                                if (!Directory.Exists(destDir))
+                                {
+                                    CopyDirectory(dir, destDir);
+                                    _logger.LogDebug($"Migrated session directory: {dirName}");
+                                }
+                            }
+                        }
+                        
+                        _logger.LogInformation($"Successfully migrated session {sessionName} from {legacyPath} to {primaryCredsFile}");
+                        return primaryCredsFile;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"Failed to migrate credentials from {legacyPath} to {primaryCredsFile}");
+                        // Continue trying other locations
+                    }
+                }
+            }
+
+            _logger.LogInformation($"No existing credentials found for session {sessionName}, will create new ones");
+            return primaryCredsFile; // Return the target path for new credentials
+        }
+
+        /// <summary>
+        /// Recursively copy directory contents
+        /// </summary>
+        private void CopyDirectory(string sourceDir, string destDir)
+        {
+            Directory.CreateDirectory(destDir);
+            
+            foreach (var file in Directory.GetFiles(sourceDir))
+            {
+                var fileName = Path.GetFileName(file);
+                var destFile = Path.Join(destDir, fileName);
+                File.Copy(file, destFile, overwrite: true);
+            }
+            
+            foreach (var dir in Directory.GetDirectories(sourceDir))
+            {
+                var dirName = Path.GetFileName(dir);
+                var destSubDir = Path.Join(destDir, dirName);
+                CopyDirectory(dir, destSubDir);
+            }
         }
 
         public class SessionData
