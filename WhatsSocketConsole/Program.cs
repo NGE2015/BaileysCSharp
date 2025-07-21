@@ -194,27 +194,27 @@ namespace WhatsSocketConsole
                         //// Sending image
                         var imageMessage = await socket.SendMessage(msg.Key.RemoteJid, new ImageMessageContent()
                         {
-                            Image = File.Open($"{Directory.GetCurrentDirectory()}\\Media\\cat.jpeg", FileMode.Open),
+                            Image = File.Open(System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Media", "cat.jpeg"), FileMode.Open),
                             Caption = "Cat.jpeg"
                         });
 
                         // send an audio file
                         var audioMessage = await socket.SendMessage(msg.Key.RemoteJid, new AudioMessageContent()
                         {
-                            Audio = File.Open($"{Directory.GetCurrentDirectory()}\\Media\\sonata.mp3", FileMode.Open),
+                            Audio = File.Open(System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Media", "sonata.mp3"), FileMode.Open),
                         });
 
                         // send an audio file
                         var videoMessage = await socket.SendMessage(msg.Key.RemoteJid, new VideoMessageContent()
                         {
-                            Video = File.Open($"{Directory.GetCurrentDirectory()}\\Media\\ma_gif.mp4", FileMode.Open),
+                            Video = File.Open(System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Media", "ma_gif.mp4"), FileMode.Open),
                             GifPlayback = true
                         });
 
                         // send a document file
                         var documentMessage = await socket.SendMessage(msg.Key.RemoteJid, new DocumentMessageContent()
                         {
-                            Document = File.Open($"{Directory.GetCurrentDirectory()}\\Media\\file.pdf", FileMode.Open),
+                            Document = File.Open(System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Media", "file.pdf"), FileMode.Open),
                             Mimetype = "application/pdf",
                             FileName = "proposal.pdf",
                         });
@@ -339,7 +339,7 @@ namespace WhatsSocketConsole
                 //await socket.NewsletterDelete(nl.Id);
                 //var imageMessage = await socket.SendMessage(nl.Id, new ImageMessageContent()
                 //{
-                //    Image = File.Open($"{Directory.GetCurrentDirectory()}\\Media\\icon.png", FileMode.Open),
+                //    Image = File.Open(System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Media", "icon.png"), FileMode.Open),
                 //    Caption = "Cat.jpeg"
                 //});
 

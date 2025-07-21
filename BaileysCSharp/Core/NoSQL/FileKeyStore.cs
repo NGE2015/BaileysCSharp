@@ -36,12 +36,12 @@ namespace BaileysCSharp.Core.NoSQL
                 if (!Directory.Exists(path))
                     Directory.CreateDirectory(path);
 
-                var file = $"{path}\\{attributes.Prefix}-{id.Replace("/", "__").Replace("::", "__")}.json";
+                var file = System.IO.Path.Combine(path, $"{attributes.Prefix}-{id.Replace("/", "__").Replace("::", "__")}.json");
 
                 if (File.Exists(file))
                 {
                     var mv = file;
-                    file = $"{path}\\{id.Replace("/", "__").Replace("::", "__")}.json";
+                    file = System.IO.Path.Combine(path, $"{id.Replace("/", "__").Replace("::", "__")}.json");
                     if (File.Exists(file))
                     {
                         File.Delete(file);
@@ -49,7 +49,7 @@ namespace BaileysCSharp.Core.NoSQL
                     File.Move(mv, file);
                 }
 
-                file = $"{path}\\{id.Replace("/", "__").Replace("::", "__")}.json";
+                file = System.IO.Path.Combine(path, $"{id.Replace("/", "__").Replace("::", "__")}.json");
                 if (File.Exists(file))
                 {
                     var data = File.ReadAllText(file) ?? "";
@@ -108,7 +108,7 @@ namespace BaileysCSharp.Core.NoSQL
                 var path = System.IO.Path.Combine(Path, attributes.Prefix);
                 if (!Directory.Exists(path))
                     Directory.CreateDirectory(path);
-                var file = $"{path}\\{id.Replace("/", "__").Replace("::", "__")}.json";
+                var file = System.IO.Path.Combine(path, $"{id.Replace("/", "__").Replace("::", "__")}.json");
 
                 if (value != null)
                 {
@@ -126,7 +126,7 @@ namespace BaileysCSharp.Core.NoSQL
         public override void Dispose()
         {
             // All file streams are already closed elsewhere; we just
-            // suppress finalization so GC doesn’t run the empty base
+            // suppress finalization so GC doesnï¿½t run the empty base
             // finalizer later.
             GC.SuppressFinalize(this);
         }

@@ -531,3 +531,15 @@ dbug: WhatsAppApi.Services.WhatsAppServiceV2[0]
       Health check: 0 active sessions
 dbug: WhatsAppApi.Middleware.RateLimitingMiddleware[0]
       Rate limiting cleanup: 0 expired clients removed, 0 active clients
+dbug: WhatsAppApi.Services.WhatsAppServiceV2[0]
+      Health check: 0 active sessions
+dbug: WhatsAppApi.Middleware.RateLimitingMiddleware[0]
+      Rate limiting cleanup: 0 expired clients removed, 0 active clients
+dbug: WhatsAppApi.Services.WhatsAppServiceV2[0]
+      Health check: 0 active sessions
+dbug: WhatsAppApi.Middleware.RateLimitingMiddleware[0]
+      Rate limiting cleanup: 0 expired clients removed, 0 active clients
+dbug: WhatsAppApi.Services.WhatsAppServiceV2[0]
+      Health check: 0 active sessions
+dbug: WhatsAppApi.Middleware.RateLimitingMiddleware[0]
+      Rate limiting cleanup: 0 expired clients removed, 0 active clients

@@ -88,11 +88,13 @@ dotnet publish WhatsAppApi/WhatsAppApi.csproj -c Release -o publish/ -r linux-x6
 ### Key Features
 
 - QR code authentication for WhatsApp Web
-- Session persistence and restoration
+- **Fixed Session Persistence** (July 2025) - Sessions now persist across deployments
 - Message sending/receiving with encryption
+- Multi-tenant session management
+- Automatic session migration from legacy locations
 - Group chat management
 - Newsletter support
-- Rate limiting and session cleanup
+- Rate limiting and health check cleanup
 
 ## Important Configuration
 
@@ -102,6 +104,27 @@ dotnet publish WhatsAppApi/WhatsAppApi.csproj -c Release -o publish/ -r linux-x6
 - Session data is stored in configurable directories (CreateSession/, TEST/, etc.)
 - Rate limiting is implemented for API endpoints
 
+## Critical Session Persistence Fix (July 2025)
+
+**IMPORTANT**: This project includes a critical fix for session persistence issues where WhatsApp sessions were dropping daily and requiring QR code re-scan.
+
+### Fix Summary
+- **Issue**: Sessions stored in variable assembly paths that changed with deployments
+- **Solution**: Fixed storage path to `/home/RubyManager/web/whatsapp.rubymanager.app/sessions/`
+- **Migration**: Automatic migration from legacy locations with fallback safety
+- **Status**: ✅ IMPLEMENTED and PRODUCTION-READY
+
+### Key Changes
+1. **SocketConfig.cs**: Fixed `CacheRoot` property to use consistent session storage path
+2. **WhatsAppServiceV2.cs**: Added `FindOrMigrateCredentialsFile()` method for automatic migration
+3. **Health Checks**: Extended session retention from 24 hours to 7 days
+
+### Documentation
+For complete implementation details, deployment instructions, and troubleshooting:
+- See `WHATSAPP_SESSION_PERSISTENCE_FIX.md` for technical implementation
+- See `DEPLOYMENT-INSTRUCTIONS.md` for deployment steps
+- See `UNIX-SOCKET-DEPLOYMENT.md` for production configuration
+
 ## Deployment
 
 The project includes GitHub Actions CI/CD pipeline that:
@@ -109,3 +132,4 @@ The project includes GitHub Actions CI/CD pipeline that:
 - Publishes for Linux x64 runtime
 - Deploys to configured environments based on appsettings.json configuration
 - Supports dev, demo, and production environments
+- **Includes session persistence setup** - automatically creates `/sessions/` directory with proper permissions

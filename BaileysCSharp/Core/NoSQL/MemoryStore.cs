@@ -29,7 +29,7 @@ namespace BaileysCSharp.Core.NoSQL
             State = new ConnectionState();
             EV = ev;
             Logger = logger;
-            database = new LiteDatabase($"{root}\\store.db");
+            database = new LiteDatabase(System.IO.Path.Combine(root, "store.db"));
 
             chats = new Store<ChatModel>(database);
             contacts = new Store<ContactModel>(database);
