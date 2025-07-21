@@ -47,6 +47,7 @@ namespace WhatsAppApi.Services
         bool IsConnected(string sessionName);
         IEnumerable<string> GetActiveSessions();
         bool TryGetSessionData(string sessionName, out SessionData sessionData);
+        Task DeleteSessionPermanentlyAsync(string sessionName, CancellationToken cancellationToken);
     }
 
     public class WhatsAppServiceV2 : IWhatsAppServiceV2, IDisposable
@@ -169,27 +170,10 @@ namespace WhatsAppApi.Services
                 sock.CleanupSession();                     // drops in-memory keys
             }
 
-            var folder = sessionData.Config.CacheRoot;     // REAL path
-            try
-            {
-                Directory.Delete(folder, true);
-                _logger.LogInformation($"Session {sessionName} stopped and folder deleted.");
-            }
-            catch (IOException)
-            {
-                // try again after forcing finalisers to release file handles
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                try
-                {
-                    Directory.Delete(folder, true);
-                    _logger.LogInformation($"Session {sessionName} stopped (2nd attempt) and folder deleted.");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, $"Session {sessionName} stopped but folder still locked.");
-                }
-            }
+            // Don't delete session folder for persistence - only cleanup in-memory resources
+            // Session files (credentials, keys) should persist across service restarts
+            var folder = sessionData.Config.CacheRoot;
+            _logger.LogInformation($"Session {sessionName} stopped. Session files preserved at: {folder}");
             //if (_sessions.TryRemove(sessionName, out var sessionData))
             //{
             //    try
@@ -226,6 +210,40 @@ namespace WhatsAppApi.Services
             //{
             //    _logger.LogWarning($"Session {sessionName} not found.");
             //}
+        }
+
+        /// <summary>
+        /// Permanently deletes a session including all files - use with caution
+        /// This is for when a session truly needs to be removed completely
+        /// </summary>
+        public async Task DeleteSessionPermanentlyAsync(string sessionName, CancellationToken cancellationToken)
+        {
+            _logger.LogWarning($"Permanently deleting session {sessionName} and all its files");
+            
+            // First stop the session (but this preserves files now)
+            await StopSessionAsync(sessionName, cancellationToken);
+            
+            // Now delete the actual files
+            var baseCacheRoot = "/home/RubyManager/web/whatsapp.rubymanager.app/sessions";
+            var sessionFolder = Path.Combine(baseCacheRoot, sessionName);
+            
+            if (Directory.Exists(sessionFolder))
+            {
+                try
+                {
+                    Directory.Delete(sessionFolder, true);
+                    _logger.LogInformation($"Session {sessionName} permanently deleted from {sessionFolder}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to permanently delete session {sessionName} from {sessionFolder}");
+                    throw;
+                }
+            }
+            else
+            {
+                _logger.LogWarning($"Session folder {sessionFolder} does not exist for permanent deletion");
+            }
         }
 
 
@@ -740,8 +758,8 @@ namespace WhatsAppApi.Services
                 await Task.Delay(2000);
                 
                 // Get the base cache directory (where session folders are stored)
-                var assemblyLocation = Path.GetDirectoryName(typeof(WASocket).Assembly.Location);
-                var baseCacheRoot = assemblyLocation ?? Environment.CurrentDirectory;
+                // Use fixed session storage path to match SocketConfig
+                var baseCacheRoot = "/home/RubyManager/web/whatsapp.rubymanager.app/sessions";
                 
                 if (!Directory.Exists(baseCacheRoot))
                 {
