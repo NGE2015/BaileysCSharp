@@ -35,8 +35,20 @@ namespace WhatsAppApi.Controllers
         [HttpPost("sendMessage")]
         public async Task<IActionResult> SendMessage([FromBody] SendMessageRequest request)
         {
-            await _whatsAppService.SendMessage(request.SessionName, request.RemoteJid, request.Message);
-            return Ok(new { Status = "Message sent" });
+            try
+            {
+                if (string.IsNullOrEmpty(request.SessionName) || string.IsNullOrEmpty(request.RemoteJid) || string.IsNullOrEmpty(request.Message))
+                {
+                    return BadRequest(new { Message = "SessionName, RemoteJid, and Message are required" });
+                }
+
+                await _whatsAppService.SendMessage(request.SessionName, request.RemoteJid, request.Message);
+                return Ok(new { Status = "Message sent" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = "Failed to send message", Error = ex.Message });
+            }
         }
         [HttpPost("sendMedia")]
         public async Task<IActionResult> SendMedia([FromBody] SendMediaRequest req)
@@ -72,14 +84,48 @@ namespace WhatsAppApi.Controllers
             return Ok(new { Status = "Media sent" });
         }
         [HttpGet("getAsciiQRCode")]
-        public IActionResult GetAsciiQRCode([FromQuery] string sessionName)
+        public async Task<IActionResult> GetAsciiQRCode([FromQuery] string sessionName, [FromQuery] int timeout = 10)
         {
-            var asciiQrCode = _whatsAppService.GetAsciiQRCode(sessionName);
-            if (string.IsNullOrEmpty(asciiQrCode))
+            if (string.IsNullOrEmpty(sessionName))
             {
-                return NotFound(new { Message = "QR code not available" });
+                return BadRequest(new { Message = "Session name is required" });
             }
-            return Ok(new { AsciiQrCode = asciiQrCode });
+
+            // Validate timeout parameter
+            if (timeout < 1 || timeout > 60)
+            {
+                return BadRequest(new { Message = "Timeout must be between 1 and 60 seconds" });
+            }
+
+            try
+            {
+                // Check if session exists first
+                if (!_whatsAppService.TryGetSessionData(sessionName, out _))
+                {
+                    return NotFound(new { Message = $"Session '{sessionName}' not found" });
+                }
+
+                // Use the new waiting mechanism
+                var asciiQrCode = await _whatsAppService.GetAsciiQRCodeWithWaitAsync(sessionName, timeout);
+                
+                if (string.IsNullOrEmpty(asciiQrCode))
+                {
+                    // Check if session is connected (which means no QR needed)
+                    if (_whatsAppService.IsConnected(sessionName))
+                    {
+                        return Ok(new { Message = "Session is already connected, no QR code needed", IsConnected = true });
+                    }
+                    
+                    // Return timeout status
+                    return StatusCode(408, new { Message = $"Request timeout: QR code not ready within {timeout} seconds" });
+                }
+                
+                return Ok(new { AsciiQrCode = asciiQrCode, IsConnected = false });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = "Internal server error", Details = ex.Message });
+            }
         }
 
         [HttpPost("forceRegenerateQRCode")]

@@ -43,6 +43,8 @@ namespace WhatsAppApi.Services
        );
         string GetQRCode(string sessionName);
         string GetAsciiQRCode(string sessionName);
+        Task<string> GetAsciiQRCodeWithWaitAsync(string sessionName, int timeoutSeconds = 10);
+        bool IsSessionReady(string sessionName);
         Task<string> ForceRegenerateQRCodeAsync(string sessionName, CancellationToken cancellationToken);
         bool IsConnected(string sessionName);
         IEnumerable<string> GetActiveSessions();
@@ -80,6 +82,8 @@ namespace WhatsAppApi.Services
 
         public async Task StartSessionAsync(string sessionName, CancellationToken cancellationToken)
         {
+            _logger.LogInformation($"Starting session: {sessionName}");
+            
             if (_sessions.ContainsKey(sessionName))
             {
                 _logger.LogWarning($"Session {sessionName} already exists. Attempting to restore connection.");
@@ -89,6 +93,7 @@ namespace WhatsAppApi.Services
                 {
                     try
                     {
+                        _logger.LogDebug($"Attempting to restore disconnected session: {sessionName}");
                         existingSession.Socket.MakeSocket();
                         existingSession.LastActivity = DateTime.UtcNow;
                         _logger.LogInformation($"Session {sessionName} connection restored.");
@@ -103,6 +108,7 @@ namespace WhatsAppApi.Services
                 }
                 else
                 {
+                    _logger.LogInformation($"Session {sessionName} already exists and is connected");
                     return; // Session exists and is connected
                 }
             }
@@ -149,6 +155,7 @@ namespace WhatsAppApi.Services
             socket.EV.MessageHistory.Set += MessageHistory_Set;
             socket.EV.Pressence.Update += Pressence_Update;
 
+            _logger.LogDebug($"Making socket connection for session: {sessionName}");
             socket.MakeSocket();
 
             sessionData.Socket = socket;
@@ -157,6 +164,7 @@ namespace WhatsAppApi.Services
             sessionData.LastActivity = DateTime.UtcNow; // Initialize LastActivity
 
             _sessions.TryAdd(sessionName, sessionData);
+            _logger.LogInformation($"Session {sessionName} initialized and added to active sessions");
         }
 
         public async Task StopSessionAsync(string sessionName, CancellationToken cancellationToken)
@@ -270,12 +278,14 @@ namespace WhatsAppApi.Services
             {
                 if (connection.QR != null)
                 {
+                    _logger.LogInformation($"Generating QR code for session {sessionName}");
                     QRCodeGenerator QrGenerator = new QRCodeGenerator();
                     QRCodeData QrCodeInfo = QrGenerator.CreateQrCode(connection.QR, QRCodeGenerator.ECCLevel.L);
                     AsciiQRCode qrCode = new AsciiQRCode(QrCodeInfo);
                     var data = qrCode.GetGraphic(1);
                     Console.WriteLine(data);
                     sessionData.QRCode = data;
+                    _logger.LogInformation($"QR code generated and stored for session {sessionName}");
                 }
                 if (connection.Connection == WAConnectionState.Close)
                 {
@@ -293,6 +303,7 @@ namespace WhatsAppApi.Services
                 }
                 else if (connection.Connection == WAConnectionState.Open)
                 {
+                    _logger.LogInformation($"Session {sessionName} connected successfully");
                     // Clear the QR code when connection is established
                     sessionData.QRCode = null;
                     sessionData.IsConnected = true;
@@ -347,19 +358,52 @@ namespace WhatsAppApi.Services
 
         public async Task SendMessage(string sessionName, string remoteJid, string message)
         {
-            if (_sessions.TryGetValue(sessionName, out var sessionData))
+            // Create log directory and file (same pattern as SendMediaAsync)
+            var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            Directory.CreateDirectory(logDir);
+            var logFile = Path.Combine(logDir, "sendmessage.log");
+            var now = DateTime.UtcNow;
+            
+            try
             {
-                await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
-                {
-                    Text = message
-                });
+                var startLog = $"{now:o}  [Service] SendMessage() started: session={sessionName} jid={remoteJid} message='{message}'\n";
+                await File.AppendAllTextAsync(logFile, startLog);
 
-                // Update LastActivity
-                sessionData.LastActivity = DateTime.UtcNow;
+                if (_sessions.TryGetValue(sessionName, out var sessionData))
+                {
+                    // Check if session is connected
+                    if (sessionData.Socket == null)
+                    {
+                        var error = $"Session {sessionName} socket is null";
+                        await File.AppendAllTextAsync(logFile, $"{DateTime.UtcNow:o}  [Service] ERROR: {error}\n");
+                        throw new Exception(error);
+                    }
+
+                    // Send message with timeout
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
+                    {
+                        Text = message
+                    });
+
+                    // Update LastActivity
+                    sessionData.LastActivity = DateTime.UtcNow;
+                    
+                    var successLog = $"{DateTime.UtcNow:o}  [Service] SendMessage() completed successfully\n";
+                    await File.AppendAllTextAsync(logFile, successLog);
+                }
+                else
+                {
+                    var error = $"Session {sessionName} not found";
+                    await File.AppendAllTextAsync(logFile, $"{DateTime.UtcNow:o}  [Service] ERROR: {error}\n");
+                    throw new Exception(error);
+                }
             }
-            else
+            catch (Exception ex)
             {
-                throw new Exception($"Session {sessionName} not found.");
+                var errorLog = $"{DateTime.UtcNow:o}  [Service] SendMessage() ERROR: {ex}\n";
+                await File.AppendAllTextAsync(logFile, errorLog);
+                throw;
             }
         }
         /// <summary>
@@ -462,6 +506,82 @@ namespace WhatsAppApi.Services
             {
                 semaphore.Release();
             }
+        }
+
+        /// <summary>
+        /// Gets ASCII QR code with waiting mechanism for session initialization
+        /// </summary>
+        /// <param name="sessionName">Name of the session</param>
+        /// <param name="timeoutSeconds">Maximum time to wait for session readiness (default 10 seconds)</param>
+        /// <returns>ASCII QR code string or null if timeout/not available</returns>
+        public async Task<string> GetAsciiQRCodeWithWaitAsync(string sessionName, int timeoutSeconds = 10)
+        {
+            _logger.LogDebug($"GetAsciiQRCodeWithWaitAsync called for session {sessionName} with timeout {timeoutSeconds}s");
+
+            // REQUEST DEDUPLICATION: Prevent concurrent QR requests for same session
+            var semaphore = _qrRequestSemaphores.GetOrAdd(sessionName, _ => new SemaphoreSlim(1, 1));
+            
+            if (!await semaphore.WaitAsync(5000)) // 5 second semaphore timeout
+            {
+                _logger.LogWarning($"QR code request for session {sessionName} timed out due to concurrent request");
+                return null;
+            }
+
+            try
+            {
+                var startTime = DateTime.UtcNow;
+                var maxWaitTime = TimeSpan.FromSeconds(timeoutSeconds);
+                
+                while (DateTime.UtcNow - startTime < maxWaitTime)
+                {
+                    // Check if session exists
+                    if (!_sessions.TryGetValue(sessionName, out var sessionData))
+                    {
+                        _logger.LogDebug($"Session {sessionName} not found, waiting...");
+                        await Task.Delay(500); // Wait 500ms before next check
+                        continue;
+                    }
+
+                    // Check if session is connected (no QR needed)
+                    if (sessionData.IsConnected)
+                    {
+                        _logger.LogInformation($"Session {sessionName} is already connected, no QR code needed");
+                        return null; // Connected session doesn't need QR
+                    }
+
+                    // Check if QR code is available
+                    if (!string.IsNullOrEmpty(sessionData.QRCode))
+                    {
+                        _logger.LogInformation($"QR code ready for session {sessionName} after {(DateTime.UtcNow - startTime).TotalMilliseconds:F0}ms");
+                        return sessionData.QRCode;
+                    }
+
+                    _logger.LogDebug($"Session {sessionName} exists but QR not ready yet, continuing to wait...");
+                    await Task.Delay(500); // Wait 500ms before next check
+                }
+
+                _logger.LogWarning($"Timeout waiting for QR code for session {sessionName} after {timeoutSeconds} seconds");
+                return null;
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Checks if a session is ready for QR code retrieval or is already connected
+        /// </summary>
+        /// <param name="sessionName">Name of the session to check</param>
+        /// <returns>True if session is ready (has QR or is connected), false otherwise</returns>
+        public bool IsSessionReady(string sessionName)
+        {
+            if (_sessions.TryGetValue(sessionName, out var sessionData))
+            {
+                // Session is ready if it's connected OR has a QR code available
+                return sessionData.IsConnected || !string.IsNullOrEmpty(sessionData.QRCode);
+            }
+            return false;
         }
 
         public async Task<string> ForceRegenerateQRCodeAsync(string sessionName, CancellationToken cancellationToken)
