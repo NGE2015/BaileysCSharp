@@ -164,6 +164,26 @@ namespace WhatsAppApi.Controllers
             var sessions = _whatsAppService.GetActiveSessions();
             return Ok(new { Sessions = sessions });
         }
+
+        [HttpPost("logoff")]
+        public async Task<IActionResult> LogoffSession([FromBody] LogoffSessionRequest request)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(request.SessionName))
+                {
+                    return BadRequest(new { Message = "Session name is required" });
+                }
+
+                // Use DeleteSessionPermanentlyAsync to completely remove session and files
+                await _whatsAppService.DeleteSessionPermanentlyAsync(request.SessionName, CancellationToken.None);
+                return Ok(new { Status = $"Session {request.SessionName} logged off and files deleted" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = "Failed to logoff session", Error = ex.Message });
+            }
+        }
     }
 
     public class StartSessionRequest
@@ -202,6 +222,11 @@ namespace WhatsAppApi.Controllers
     }
 
     public class ForceRegenerateQRRequest
+    {
+        public string SessionName { get; set; }
+    }
+
+    public class LogoffSessionRequest
     {
         public string SessionName { get; set; }
     }
