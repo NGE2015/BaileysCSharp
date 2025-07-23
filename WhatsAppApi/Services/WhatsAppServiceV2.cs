@@ -358,52 +358,19 @@ namespace WhatsAppApi.Services
 
         public async Task SendMessage(string sessionName, string remoteJid, string message)
         {
-            // Create log directory and file (same pattern as SendMediaAsync)
-            var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
-            Directory.CreateDirectory(logDir);
-            var logFile = Path.Combine(logDir, "sendmessage.log");
-            var now = DateTime.UtcNow;
-            
-            try
+            if (_sessions.TryGetValue(sessionName, out var sessionData))
             {
-                var startLog = $"{now:o}  [Service] SendMessage() started: session={sessionName} jid={remoteJid} message='{message}'\n";
-                await File.AppendAllTextAsync(logFile, startLog);
-
-                if (_sessions.TryGetValue(sessionName, out var sessionData))
+                await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
                 {
-                    // Check if session is connected
-                    if (sessionData.Socket == null)
-                    {
-                        var error = $"Session {sessionName} socket is null";
-                        await File.AppendAllTextAsync(logFile, $"{DateTime.UtcNow:o}  [Service] ERROR: {error}\n");
-                        throw new Exception(error);
-                    }
+                    Text = message
+                });
 
-                    // Send message with timeout
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                    await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
-                    {
-                        Text = message
-                    });
-
-                    // Update LastActivity
-                    sessionData.LastActivity = DateTime.UtcNow;
-                    
-                    var successLog = $"{DateTime.UtcNow:o}  [Service] SendMessage() completed successfully\n";
-                    await File.AppendAllTextAsync(logFile, successLog);
-                }
-                else
-                {
-                    var error = $"Session {sessionName} not found";
-                    await File.AppendAllTextAsync(logFile, $"{DateTime.UtcNow:o}  [Service] ERROR: {error}\n");
-                    throw new Exception(error);
-                }
+                // Update LastActivity
+                sessionData.LastActivity = DateTime.UtcNow;
             }
-            catch (Exception ex)
+            else
             {
-                var errorLog = $"{DateTime.UtcNow:o}  [Service] SendMessage() ERROR: {ex}\n";
-                await File.AppendAllTextAsync(logFile, errorLog);
-                throw;
+                throw new Exception($"Session {sessionName} not found.");
             }
         }
         /// <summary>
