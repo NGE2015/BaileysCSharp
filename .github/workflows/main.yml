@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - feature/whatsapp-message-history
+      - feature/revert-baileys-core-for-testing
 
 jobs:
   build:
