@@ -387,13 +387,35 @@ namespace WhatsAppApi.Services
         {
             if (_sessions.TryGetValue(sessionName, out var sessionData))
             {
-                await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
+                // Add connection health check before sending
+                if (!sessionData.IsConnected)
                 {
-                    Text = message
-                });
+                    _logger.LogWarning($"Session {sessionName} is not connected, cannot send message");
+                    throw new Exception($"Session {sessionName} is not connected.");
+                }
 
-                // Update LastActivity
-                sessionData.LastActivity = DateTime.UtcNow;
+                _logger.LogInformation($"Attempting to send message to {remoteJid} via session {sessionName}");
+                
+                try
+                {
+                    await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
+                    {
+                        Text = message
+                    });
+
+                    _logger.LogInformation($"Message sent successfully to {remoteJid} via session {sessionName}");
+                    
+                    // Update LastActivity
+                    sessionData.LastActivity = DateTime.UtcNow;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Failed to send message via session {sessionName}: {ex.Message}");
+                    
+                    // Mark session as disconnected if send fails
+                    sessionData.IsConnected = false;
+                    throw;
+                }
             }
             else
             {
@@ -414,33 +436,15 @@ namespace WhatsAppApi.Services
             if (!_sessions.TryGetValue(sessionName, out var sessionData))
                 throw new InvalidOperationException($"Session '{sessionName}' not found.");
 
-            // prepare log folder & log file
-            var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
-            var logFile = Path.Combine(logDir, "SendMediaService.log");
-            Directory.CreateDirectory(logDir);
+            // Add connection health check before sending
+            if (!sessionData.IsConnected)
+            {
+                _logger.LogWarning($"Session {sessionName} is not connected, cannot send media");
+                throw new Exception($"Session {sessionName} is not connected.");
+            }
 
-            var now = DateTime.UtcNow;
-            var timeTag = now.ToString("yyyyMMdd_HHmmssfff");
             var length = mediaBytes?.Length ?? 0;
-
-            // 1) Write the bytes out as a .png so you can open it directly on the server
-            var imagePath = Path.Combine(logDir, $"{sessionName}_{timeTag}.png");
-            try
-            {
-                //await File.WriteAllBytesAsync(imagePath, mediaBytes);
-            }
-            catch
-            {
-                // swallow; best‐effort
-            }
-
-            // 2) Log the Base64 snippet (first 200 chars) plus length
-            var b64 = Convert.ToBase64String(mediaBytes ?? Array.Empty<byte>());
-            var snippet = b64.Length > 200 ? b64.Substring(0, 200) + "…(truncated)" : b64;
-            var headerLog = $"{now:o}  [Service] session={sessionName} jid={remoteJid} mime={mimeType} bytes={length}\n"
-                          + $"              ImageDump: {imagePath}\n"
-                          + $"              Base64: {snippet}\n";
-            await File.AppendAllTextAsync(logFile, headerLog);
+            _logger.LogInformation($"Attempting to send media to {remoteJid} via session {sessionName}, size: {length} bytes, type: {mimeType}");
 
             // now hand off to Baileys
             using var ms = new MemoryStream(mediaBytes);
@@ -455,17 +459,17 @@ namespace WhatsAppApi.Services
                     }
                 );
 
-                var doneLine = $"{DateTime.UtcNow:o}  [Service] SendMessage() completed successfully\n";
-                await File.AppendAllTextAsync(logFile, doneLine);
+                _logger.LogInformation($"Media sent successfully to {remoteJid} via session {sessionName}");
+                sessionData.LastActivity = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
-                var errLine = $"{DateTime.UtcNow:o}  [Service] ERROR: {ex}\n";
-                await File.AppendAllTextAsync(logFile, errLine);
+                _logger.LogError(ex, $"Failed to send media via session {sessionName}: {ex.Message}");
+                
+                // Mark session as disconnected if send fails
+                sessionData.IsConnected = false;
                 throw;
             }
-
-            sessionData.LastActivity = DateTime.UtcNow;
         }
 
         public string GetQRCode(string sessionName)
