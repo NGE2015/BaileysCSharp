@@ -77,8 +77,9 @@ namespace WhatsAppApi.Services
             // Read QR session timeout from configuration (default: 10 minutes)
             _qrSessionTimeoutMinutes = _configuration.GetValue<int>("WhatsAppSettings:QRSessionTimeoutMinutes", 10);
 
-            // Start health check timer
-            _healthCheckTimer = new Timer(PerformHealthCheck, null, _healthCheckInterval, _healthCheckInterval);
+            // TEMPORARILY DISABLED: Start health check timer to test hanging issue
+            // _healthCheckTimer = new Timer(PerformHealthCheck, null, _healthCheckInterval, _healthCheckInterval);
+            _healthCheckTimer = null; // Disable health check temporarily for testing
             
             // Auto-restore existing sessions on startup
             _ = Task.Run(RestoreExistingSessionsAsync);
