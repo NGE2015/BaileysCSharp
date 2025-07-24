@@ -1,24 +1,31 @@
-using BaileysCSharp.Core.Events;
+﻿using Proto;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 using BaileysCSharp.Core.Helper;
 using BaileysCSharp.Core.Models;
 using BaileysCSharp.Core.Stores;
-using BaileysCSharp.Core.Types;
 using BaileysCSharp.Core.Utils;
 using BaileysCSharp.Core.WABinary;
 using BaileysCSharp.Exceptions;
-using Proto;
-using System.Diagnostics.CodeAnalysis;
-using System.Text;
-using static BaileysCSharp.Core.Models.ChatConstants;
 using static BaileysCSharp.Core.Utils.ChatUtils;
-using static BaileysCSharp.Core.Utils.GenericUtils;
+using static BaileysCSharp.Core.Models.ChatConstants;
 using static BaileysCSharp.Core.WABinary.Constants;
+using static BaileysCSharp.Core.Utils.GenericUtils;
+using BaileysCSharp.Core.Sockets;
+using BaileysCSharp.Core.Events;
+using BaileysCSharp.Core.Types;
 
 namespace BaileysCSharp.Core
 {
     public abstract class ChatSocket : BaseSocket
     {
+
         protected ProcessingMutex processingMutex;
+
 
         public ChatSocket([NotNull] SocketConfig config) : base(config)
         {
@@ -26,6 +33,7 @@ namespace BaileysCSharp.Core
             events["CB:presence"] = HandlePresenceUpdate;
             events["CB:chatstate"] = HandlePresenceUpdate;
             events["CB:ib,,dirty"] = HandleDirtyUpdate;
+
 
             EV.Connection.Update += Connection_Update;
         }
@@ -55,6 +63,9 @@ namespace BaileysCSharp.Core
                 }
             }
         }
+
+
+
 
         private bool PendingAppStateSync { get; set; } = false;
         private bool NeedToFlushWithAppStateSync { get; set; } = false;
@@ -91,6 +102,7 @@ namespace BaileysCSharp.Core
             }
             return true;
         }
+
 
         #region chats
 
@@ -135,6 +147,7 @@ namespace BaileysCSharp.Core
                 PendingAppStateSync = true;
             }
 
+
             var t1 = new Task(async () =>
             {
                 if (historyMsg != null && Creds.MyAppStateKeyId != null)
@@ -177,6 +190,7 @@ namespace BaileysCSharp.Core
                     EV.Flush();
                 }
             }
+
         }
 
         protected async Task ResyncAppState(string[] collections, bool isInitialSync)
@@ -194,6 +208,7 @@ namespace BaileysCSharp.Core
                 initialVersionMap[collection] = 0;
             }
 
+
             while (collectionsToHandle.Count > 0)
             {
                 string lastName = "";
@@ -207,7 +222,10 @@ namespace BaileysCSharp.Core
                         var state = Keys.Get<AppStateSyncVersion>(name);
                         if (state != null)
                         {
-                            initialVersionMap.TryAdd(name, state.Version);
+                            if (!initialVersionMap.ContainsKey(name))
+                            {
+                                initialVersionMap[name] = state.Version;
+                            }
                         }
                         else
                         {
@@ -317,6 +335,7 @@ namespace BaileysCSharp.Core
                     }
                 }
             }
+
 
             var onMutation = NewAppStateChunkHandler(isInitialSync);
             foreach (var key in globalMutationMap)
@@ -451,6 +470,7 @@ namespace BaileysCSharp.Core
             });
         }
 
+
         public async Task<BinaryNode[]> InteractiveQuery(BinaryNode[] userNodes, BinaryNode queryNode)
         {
             var result = await Query(new BinaryNode()
@@ -498,6 +518,7 @@ namespace BaileysCSharp.Core
             return users;
         }
 
+
         public async Task<OnWhatsAppResult[]> OnWhatsApp(params string[] jids)
         {
             var query = new BinaryNode()
@@ -515,7 +536,7 @@ namespace BaileysCSharp.Core
                     {
                         tag = "contact",
                         attrs = {},
-                        // insures only 1 + is there
+			            // insures only 1 + is there
                         content = Encoding.UTF8.GetBytes( $"+{x.Replace("+","")}")
                     }
                 }
@@ -525,6 +546,7 @@ namespace BaileysCSharp.Core
 
             return result.Select(x => new OnWhatsAppResult(x)).ToArray();
         }
+
 
         public async Task<StatusResult> FetchStatus(string jid)
         {
@@ -638,10 +660,10 @@ namespace BaileysCSharp.Core
                 tag = "iq",
                 attrs =
                 {
-                    {"target", jid },
-                    {"to", S_WHATSAPP_NET },
-                    {"type", "get" },
-                    {"xmlns", "w:profile:picture" }
+                    	{"target", jid },
+			{"to", S_WHATSAPP_NET },
+			{"type", "get" },
+			{"xmlns", "w:profile:picture" }
                 },
                 content = new BinaryNode[]
                 {
@@ -911,7 +933,7 @@ namespace BaileysCSharp.Core
                 if (Creds != null && props != null)
                 {
                     //Creds.LastPropHash = propsNode.attrs["hash"];
-                    Creds.LastPropHash = propsNode.attrs.TryGetValue("hash", out var hash) ? hash : Creds.LastPropHash;
+                    Creds.LastPropHash = propsNode.attrs.ContainsKey("hash") ? propsNode.attrs["hash"] : Creds.LastPropHash;
                     EV.Emit(EmitType.Update, Creds);
                 }
             }
@@ -1285,7 +1307,12 @@ namespace BaileysCSharp.Core
             var result = await Query(node);
             var tos = GetBinaryNodeChild(result, "tos");
             var notices = GetBinaryNodeChildren(tos, "notice");
+
         }
+
+
+
+
 
         #endregion
     }
