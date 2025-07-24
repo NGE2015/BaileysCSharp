@@ -64,6 +64,7 @@ namespace WhatsAppApi.Services
         private const int MaxSessionsPerService = 100;
         private const int MaxInactiveHours = 72; // 3 days for inactive sessions
         private const int MaxConnectedDays = 30; // 30 days for connected sessions
+        private readonly int _qrSessionTimeoutMinutes;
         private bool _disposed = false;
 
         public WhatsAppServiceV2(ILogger<WhatsAppServiceV2> logger, HttpClient httpClient, IConfiguration configuration)
@@ -72,6 +73,9 @@ namespace WhatsAppApi.Services
             _httpClient = httpClient;
             _configuration = configuration;
             _sessions = new ConcurrentDictionary<string, SessionData>();
+            
+            // Read QR session timeout from configuration (default: 10 minutes)
+            _qrSessionTimeoutMinutes = _configuration.GetValue<int>("WhatsAppSettings:QRSessionTimeoutMinutes", 10);
 
             // Start health check timer
             _healthCheckTimer = new Timer(PerformHealthCheck, null, _healthCheckInterval, _healthCheckInterval);
@@ -113,7 +117,10 @@ namespace WhatsAppApi.Services
                 }
             }
 
-            var sessionData = new SessionData();
+            var sessionData = new SessionData()
+            {
+                MaxQRSessionDuration = TimeSpan.FromMinutes(_qrSessionTimeoutMinutes)
+            };
             var config = new SocketConfig()
             {
                 SessionName = sessionName,
@@ -278,7 +285,27 @@ namespace WhatsAppApi.Services
             {
                 if (connection.QR != null)
                 {
-                    _logger.LogInformation($"Generating QR code for session {sessionName}");
+                    // Initialize QR session start time on first QR generation
+                    if (sessionData.QRSessionStartTime == DateTime.MinValue)
+                    {
+                        sessionData.QRSessionStartTime = DateTime.UtcNow;
+                        _logger.LogInformation($"Starting QR session for {sessionName}, will timeout after {sessionData.MaxQRSessionDuration.TotalMinutes} minutes");
+                    }
+
+                    // Check if QR session has exceeded maximum duration
+                    var qrSessionDuration = DateTime.UtcNow - sessionData.QRSessionStartTime;
+                    if (qrSessionDuration > sessionData.MaxQRSessionDuration)
+                    {
+                        _logger.LogWarning($"QR session timeout reached for {sessionName} after {qrSessionDuration.TotalMinutes:F1} minutes, stopping QR generation");
+                        sessionData.QRCode = null;
+                        sessionData.IsConnected = false;
+                        
+                        // Stop the session to prevent further QR generation
+                        _ = Task.Run(async () => await StopSessionAsync(sessionName, CancellationToken.None));
+                        return;
+                    }
+
+                    _logger.LogInformation($"Generating QR code for session {sessionName} (session time: {qrSessionDuration.TotalMinutes:F1}min/{sessionData.MaxQRSessionDuration.TotalMinutes}min)");
                     QRCodeGenerator QrGenerator = new QRCodeGenerator();
                     QRCodeData QrCodeInfo = QrGenerator.CreateQrCode(connection.QR, QRCodeGenerator.ECCLevel.L);
                     AsciiQRCode qrCode = new AsciiQRCode(QrCodeInfo);
@@ -1009,7 +1036,15 @@ namespace WhatsAppApi.Services
                         shouldCleanup = true;
                         reason = $"connected but stale for {timeSinceActivity.TotalDays:F1} days";
                     }
-                    // 3. Unhealthy connected sessions
+                    // 3. Expired QR sessions (prevent infinite QR generation)
+                    else if (!sessionData.IsConnected && 
+                             sessionData.QRSessionStartTime != DateTime.MinValue &&
+                             now - sessionData.QRSessionStartTime > sessionData.MaxQRSessionDuration)
+                    {
+                        shouldCleanup = true;
+                        reason = $"QR session expired after {(now - sessionData.QRSessionStartTime).TotalMinutes:F1} minutes";
+                    }
+                    // 4. Unhealthy connected sessions
                     else if (sessionData.IsConnected && !IsSocketHealthy(sessionData.Socket))
                     {
                         _logger.LogWarning($"Session {sessionName} appears unhealthy, marking as disconnected");
@@ -1281,6 +1316,8 @@ namespace WhatsAppApi.Services
             public bool IsConnected { get; set; }
             public DateTime LastActivity { get; set; } = DateTime.UtcNow;
             public int ReconnectAttempts { get; set; } = 0;
+            public DateTime QRSessionStartTime { get; set; } = DateTime.MinValue;
+            public TimeSpan MaxQRSessionDuration { get; set; } = TimeSpan.FromMinutes(10);
         }
     }
 }
