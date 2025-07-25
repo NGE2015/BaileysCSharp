@@ -7,17 +7,28 @@ using BaileysCSharp.Core.Stores;
 using BaileysCSharp.LibSignal;
 using static BaileysCSharp.Core.Utils.JidUtils;
 using BaileysCSharp.Core.Types;
+using BaileysCSharp.Core.Events;
 
 namespace BaileysCSharp.Core.Signal
 {
     public class SignalRepository
     {
         public SignalStorage Storage { get; set; }
+        public EventEmitter? EventEmitter { get; set; }
+        
         public SignalRepository(AuthenticationState auth)
         {
             Auth = auth;
             Storage = new SignalStorage(Auth);
         }
+        
+        public SignalRepository(AuthenticationState auth, EventEmitter eventEmitter)
+        {
+            Auth = auth;
+            Storage = new SignalStorage(Auth);
+            EventEmitter = eventEmitter;
+        }
+        
         public AuthenticationState Auth { get; }
 
         public byte[] DecryptGroupMessage(string group, string authorJid, byte[] content)
@@ -43,7 +54,23 @@ namespace BaileysCSharp.Core.Signal
             byte[] result;
             if (type == "pkmsg")
             {
+                // PreKey message - this will consume a PreKey and requires credential update
                 result = session.DecryptPreKeyWhisperMessage(ciphertext);
+                
+                // CRITICAL FIX: Emit Auth.Update after PreKey consumption
+                // This updates credentials with consumed PreKey information
+                if (EventEmitter != null && Auth?.Creds != null)
+                {
+                    try
+                    {
+                        EventEmitter.Emit(EmitType.Update, Auth.Creds);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Log but don't fail decryption if credential update fails
+                        System.Console.WriteLine($"Failed to emit Auth.Update after PreKey consumption: {ex.Message}");
+                    }
+                }
             }
             else
             {

@@ -66,7 +66,7 @@ namespace BaileysCSharp.Core.Models
         }
         public SignalRepository MakeSignalRepository(EventEmitter ev)
         {
-            return new SignalRepository(Auth);
+            return new SignalRepository(Auth, ev);
         }
 
         internal MemoryStore MakeStore(EventEmitter ev, DefaultLogger logger)
