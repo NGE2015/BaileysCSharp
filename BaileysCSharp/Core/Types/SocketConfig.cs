@@ -23,7 +23,7 @@ namespace BaileysCSharp.Core.Models
         public SocketConfig()
         {
             Browser = Browsers.Ubuntu("Chrome");
-            Version = [2, 3000, 1023373029];
+            Version = [2, 3000, 1024961288];
             Logger = new DefaultLogger();
             Logger.Level = LogLevel.Trace;
             AppStateMacVerification = new AppStateMacVerification();

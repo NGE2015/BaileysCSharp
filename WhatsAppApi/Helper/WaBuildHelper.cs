@@ -25,7 +25,7 @@ namespace WhatsAppApi.Helper      // ← match your folder/namespace
     public static class WaBuildHelper
         {
             // last known good build (updated 2025-05-31)
-            private static readonly uint[] Fallback = { 2, 3000, 1023373029 };
+            private static readonly uint[] Fallback = { 2, 3000, 1024961288 };
 
         public static async Task<uint[]> GetLatestAlphaAsync()
         {
