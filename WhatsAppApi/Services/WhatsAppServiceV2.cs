@@ -157,11 +157,13 @@ namespace WhatsAppApi.Services
             var socket = new WASocket(config);
 
             // Attach event handlers
+            _logger.LogDebug($"Attaching event handlers for session {sessionName}");
             socket.EV.Auth.Update += (sender, creds) => Auth_Update(sender, creds, sessionName);
             socket.EV.Connection.Update += (sender, state) => Connection_UpdateAsync(sender, state, sessionName);
             socket.EV.Message.Upsert += (sender, e) => Message_Upsert(sender, e, sessionName);
             socket.EV.MessageHistory.Set += MessageHistory_Set;
             socket.EV.Pressence.Update += Pressence_Update;
+            _logger.LogDebug($"Event handlers attached successfully for session {sessionName}");
 
             _logger.LogDebug($"Making socket connection for session: {sessionName}");
             socket.MakeSocket();
@@ -265,12 +267,16 @@ namespace WhatsAppApi.Services
 
         private void Auth_Update(object? sender, AuthenticationCreds e, string sessionName)
         {
+            _logger.LogInformation($"Auth_Update called for session {sessionName} - updating credentials");
+            
             if (_sessions.TryGetValue(sessionName, out var sessionData))
             {
                 var cacheRoot = sessionData.Config.CacheRoot;
                 var credsFile = Path.Join(cacheRoot, $"{sessionName}_creds.json");
                 var json = AuthenticationCreds.Serialize(e);
                 File.WriteAllText(credsFile, json);
+                
+                _logger.LogInformation($"Successfully updated credentials for session {sessionName} at {credsFile}");
             }
             else
             {
@@ -399,10 +405,12 @@ namespace WhatsAppApi.Services
                 
                 try
                 {
+                    // Add timeout to prevent indefinite hanging
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                     await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
                     {
                         Text = message
-                    });
+                    }).WaitAsync(cts.Token);
 
                     _logger.LogInformation($"Message sent successfully to {remoteJid} via session {sessionName}");
                     
@@ -451,6 +459,8 @@ namespace WhatsAppApi.Services
             using var ms = new MemoryStream(mediaBytes);
             try
             {
+                // Add timeout to prevent indefinite hanging
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 await sessionData.Socket.SendMessage(
                     remoteJid,
                     new ImageMessageContent
@@ -458,7 +468,7 @@ namespace WhatsAppApi.Services
                         Image = ms,
                         Caption = caption
                     }
-                );
+                ).WaitAsync(cts.Token);
 
                 _logger.LogInformation($"Media sent successfully to {remoteJid} via session {sessionName}");
                 sessionData.LastActivity = DateTime.UtcNow;
