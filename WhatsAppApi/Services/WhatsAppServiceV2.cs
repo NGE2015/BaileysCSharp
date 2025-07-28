@@ -20,10 +20,8 @@ using System.Text.Json;
 using BaileysCSharp.Core.Helper;
 using static WhatsAppApi.Services.WhatsAppServiceV2;
 using BaileysCSharp.Core.Models.Sending.Media;
-using System.IO;
-using BaileysCSharp.Core.Models.Sending.Media;
-using WhatsAppApi.Helper;          // <— new using
-using Microsoft.Extensions.Configuration;  // <— new using
+using WhatsAppApi.Helper;
+using Microsoft.Extensions.Configuration;
 namespace WhatsAppApi.Services
 {
     public interface IWhatsAppServiceV2
@@ -327,27 +325,27 @@ namespace WhatsAppApi.Services
                     sessionData.LastDisconnectionTime = DateTime.UtcNow;
                     
                     // Extract disconnect reason for enhanced reconnection logic
-                    if (connection.LastDisconnect.Error is Boom boom && boom.Data?.StatusCode != null)
+                    if (connection.LastDisconnect.Error is Boom boomError && boomError.Data?.StatusCode != null)
                     {
-                        sessionData.LastDisconnectReason = (DisconnectReason)boom.Data.StatusCode;
-                        _logger.LogInformation($"Session {sessionName} disconnected with reason: {sessionData.LastDisconnectReason} ({boom.Data.StatusCode})");
+                        sessionData.LastDisconnectReason = (DisconnectReason)boomError.Data.StatusCode;
+                        _logger.LogInformation($"Session {sessionName} disconnected with reason: {sessionData.LastDisconnectReason} ({boomError.Data.StatusCode})");
+                        
+                        // Enhanced reconnection with disconnect reason awareness (only if not logged out)
+                        if (boomError.Data.StatusCode != (int)DisconnectReason.LoggedOut)
+                        {
+                            _logger.LogInformation($"Initiating reconnection for session {sessionName} due to {sessionData.LastDisconnectReason}");
+                            await ScheduleReconnectionAsync(sessionName, sessionData);
+                        }
+                        else
+                        {
+                            _logger.LogWarning($"Session {sessionName} is logged out, will not auto-reconnect");
+                            Console.WriteLine($"Session {sessionName} is logged out");
+                            sessionData.LastDisconnectReason = DisconnectReason.LoggedOut;
+                        }
                     }
                     else
                     {
                         sessionData.LastDisconnectReason = DisconnectReason.None;
-                    }
-                    
-                    if (connection.LastDisconnect.Error is Boom && boom.Data?.StatusCode != (int)DisconnectReason.LoggedOut)
-                    {
-                        // Enhanced reconnection with disconnect reason awareness
-                        _logger.LogInformation($"Initiating reconnection for session {sessionName} due to {sessionData.LastDisconnectReason}");
-                        await ScheduleReconnectionAsync(sessionName, sessionData);
-                    }
-                    else
-                    {
-                        _logger.LogWarning($"Session {sessionName} is logged out, will not auto-reconnect");
-                        Console.WriteLine($"Session {sessionName} is logged out");
-                        sessionData.LastDisconnectReason = DisconnectReason.LoggedOut;
                     }
                 }
                 else if (connection.Connection == WAConnectionState.Open)
@@ -1207,8 +1205,7 @@ namespace WhatsAppApi.Services
             return reason switch
             {
                 DisconnectReason.ConnectionClosed => 10, // 24-hour session expiry - more attempts
-                DisconnectReason.ConnectionLost => 8,    // Network issues - moderate attempts  
-                DisconnectReason.TimedOut => 6,          // Timeout issues - some attempts
+                DisconnectReason.ConnectionLost or DisconnectReason.TimedOut => 8, // Network/timeout issues - moderate attempts  
                 DisconnectReason.BadSession => 3,        // Bad session - fewer attempts
                 _ => 5                                    // Default fallback
             };
@@ -1304,7 +1301,12 @@ namespace WhatsAppApi.Services
                 if (File.Exists(credsFile))
                 {
                     var authentication = AuthenticationCreds.Deserialize(File.ReadAllText(credsFile));
-                    config.AuthenticationCredentials = authentication;
+                    BaseKeyStore keys = new FileKeyStore(config.CacheRoot);
+                    config.Auth = new AuthenticationState()
+                    {
+                        Creds = authentication,
+                        Keys = keys
+                    };
                     
                     var socket = new WASocket(config);
                     sessionData.Socket = socket;
@@ -1312,7 +1314,7 @@ namespace WhatsAppApi.Services
                     
                     // Setup event handlers
                     socket.EV.Connection.Update += (sender, e) => Connection_UpdateAsync(sender, e, sessionName);
-                    socket.EV.Creds.Update += (sender, e) => Auth_UpdateAsync(sender, e, sessionName);
+                    socket.EV.Auth.Update += (sender, e) => Auth_Update(sender, e, sessionName);
                     
                     socket.MakeSocket();
                     await Task.Delay(5000); // Wait longer for full recreation
@@ -1369,8 +1371,11 @@ namespace WhatsAppApi.Services
                 await Task.Delay(2000); // Brief pause
                 
                 // Restart session
-                var result = await StartSessionAsync(sessionName);
-                return result;
+                await StartSessionAsync(sessionName, CancellationToken.None);
+                
+                // Wait a moment and check if session is connected
+                await Task.Delay(3000);
+                return _sessions.ContainsKey(sessionName) && _sessions[sessionName].IsConnected;
             }
             catch (Exception ex)
             {
@@ -1395,7 +1400,7 @@ namespace WhatsAppApi.Services
                 var authState = AuthenticationCreds.Deserialize(File.ReadAllText(credsFile));
                 
                 // Basic validation checks
-                if (authState?.Creds?.NoiseKey == null || authState?.Creds?.SignedIdentityKey == null)
+                if (authState?.NoiseKey == null || authState?.SignedIdentityKey == null)
                 {
                     _logger.LogWarning($"Invalid or incomplete credentials for session {sessionName}");
                     return false;
