@@ -324,15 +324,30 @@ namespace WhatsAppApi.Services
                 if (connection.Connection == WAConnectionState.Close)
                 {
                     sessionData.IsConnected = false;
-                    if (connection.LastDisconnect.Error is Boom boom && boom.Data?.StatusCode != (int)DisconnectReason.LoggedOut)
+                    sessionData.LastDisconnectionTime = DateTime.UtcNow;
+                    
+                    // Extract disconnect reason for enhanced reconnection logic
+                    if (connection.LastDisconnect.Error is Boom boom && boom.Data?.StatusCode != null)
                     {
-                        // Implement exponential backoff for reconnection
+                        sessionData.LastDisconnectReason = (DisconnectReason)boom.Data.StatusCode;
+                        _logger.LogInformation($"Session {sessionName} disconnected with reason: {sessionData.LastDisconnectReason} ({boom.Data.StatusCode})");
+                    }
+                    else
+                    {
+                        sessionData.LastDisconnectReason = DisconnectReason.None;
+                    }
+                    
+                    if (connection.LastDisconnect.Error is Boom && boom.Data?.StatusCode != (int)DisconnectReason.LoggedOut)
+                    {
+                        // Enhanced reconnection with disconnect reason awareness
+                        _logger.LogInformation($"Initiating reconnection for session {sessionName} due to {sessionData.LastDisconnectReason}");
                         await ScheduleReconnectionAsync(sessionName, sessionData);
                     }
                     else
                     {
                         _logger.LogWarning($"Session {sessionName} is logged out, will not auto-reconnect");
                         Console.WriteLine($"Session {sessionName} is logged out");
+                        sessionData.LastDisconnectReason = DisconnectReason.LoggedOut;
                     }
                 }
                 else if (connection.Connection == WAConnectionState.Open)
@@ -1144,18 +1159,19 @@ namespace WhatsAppApi.Services
             if (_disposed) return;
 
             sessionData.ReconnectAttempts++;
-            var maxAttempts = 5;
+            var maxAttempts = GetMaxAttemptsForDisconnectReason(sessionData.LastDisconnectReason);
 
             if (sessionData.ReconnectAttempts > maxAttempts)
             {
-                _logger.LogError($"Session {sessionName} exceeded maximum reconnection attempts ({maxAttempts})");
+                _logger.LogError($"Session {sessionName} exceeded maximum reconnection attempts ({maxAttempts}) with disconnect reason {sessionData.LastDisconnectReason}");
+                await NotifyReconnectionFailure(sessionName, sessionData);
                 return;
             }
 
-            // Exponential backoff: 2^attempt seconds, max 5 minutes
-            var delaySeconds = Math.Min(Math.Pow(2, sessionData.ReconnectAttempts), 300);
+            // Enhanced backoff strategy based on attempt number
+            var delaySeconds = CalculateReconnectionDelay(sessionData.ReconnectAttempts, sessionData.LastDisconnectReason);
 
-            _logger.LogInformation($"Scheduling reconnection for {sessionName} in {delaySeconds} seconds (attempt {sessionData.ReconnectAttempts})");
+            _logger.LogInformation($"Scheduling reconnection for {sessionName} in {delaySeconds} seconds (attempt {sessionData.ReconnectAttempts}/{maxAttempts}) - Strategy: {GetReconnectionStrategy(sessionData.ReconnectAttempts)}");
 
             await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
 
@@ -1163,12 +1179,251 @@ namespace WhatsAppApi.Services
 
             try
             {
-                sessionData.Socket.MakeSocket();
-                _logger.LogInformation($"Reconnection attempt {sessionData.ReconnectAttempts} for session {sessionName}");
+                var success = await ExecuteReconnectionStrategy(sessionName, sessionData);
+                
+                if (success)
+                {
+                    _logger.LogInformation($"Successfully reconnected session {sessionName} on attempt {sessionData.ReconnectAttempts}");
+                    sessionData.ReconnectAttempts = 0; // Reset counter on success
+                    return;
+                }
+                
+                _logger.LogWarning($"Reconnection attempt {sessionData.ReconnectAttempts} failed for session {sessionName}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Failed to reconnect session {sessionName} on attempt {sessionData.ReconnectAttempts}");
+                _logger.LogError(ex, $"Failed to reconnect session {sessionName} on attempt {sessionData.ReconnectAttempts}: {ex.Message}");
+            }
+            
+            // Schedule next attempt if we haven't exceeded the limit
+            if (sessionData.ReconnectAttempts < maxAttempts)
+            {
+                _ = Task.Run(() => ScheduleReconnectionAsync(sessionName, sessionData));
+            }
+        }
+
+        private int GetMaxAttemptsForDisconnectReason(DisconnectReason reason)
+        {
+            return reason switch
+            {
+                DisconnectReason.ConnectionClosed => 10, // 24-hour session expiry - more attempts
+                DisconnectReason.ConnectionLost => 8,    // Network issues - moderate attempts  
+                DisconnectReason.TimedOut => 6,          // Timeout issues - some attempts
+                DisconnectReason.BadSession => 3,        // Bad session - fewer attempts
+                _ => 5                                    // Default fallback
+            };
+        }
+
+        private double CalculateReconnectionDelay(int attemptNumber, DisconnectReason reason)
+        {
+            // Different delay strategies based on disconnect reason
+            return reason switch
+            {
+                DisconnectReason.ConnectionClosed => // 24-hour expiry - longer delays
+                    Math.Min(30 * Math.Pow(1.5, attemptNumber - 1), 1800), // 30s to 30min max
+                DisconnectReason.ConnectionLost => // Network issues - moderate delays
+                    Math.Min(10 * Math.Pow(2, attemptNumber - 1), 600),    // 10s to 10min max
+                _ => // Default exponential backoff
+                    Math.Min(Math.Pow(2, attemptNumber), 300)              // 2s to 5min max
+            };
+        }
+
+        private string GetReconnectionStrategy(int attemptNumber)
+        {
+            return attemptNumber switch
+            {
+                <= 2 => "SimpleRetry",
+                <= 5 => "FullRecreation", 
+                <= 8 => "CredentialRefresh",
+                _ => "ForceRestart"
+            };
+        }
+
+        private async Task<bool> ExecuteReconnectionStrategy(string sessionName, SessionData sessionData)
+        {
+            var strategy = GetReconnectionStrategy(sessionData.ReconnectAttempts);
+            
+            try
+            {
+                return strategy switch
+                {
+                    "SimpleRetry" => await SimpleSocketRetry(sessionData),
+                    "FullRecreation" => await FullSocketRecreation(sessionName, sessionData),
+                    "CredentialRefresh" => await CredentialRefreshReconnection(sessionName, sessionData),
+                    "ForceRestart" => await ForceSessionRestart(sessionName, sessionData),
+                    _ => await SimpleSocketRetry(sessionData)
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Reconnection strategy {strategy} failed for session {sessionName}: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task<bool> SimpleSocketRetry(SessionData sessionData)
+        {
+            try
+            {
+                sessionData.Socket.MakeSocket();
+                await Task.Delay(3000); // Wait for connection establishment
+                return sessionData.IsConnected;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug($"Simple socket retry failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task<bool> FullSocketRecreation(string sessionName, SessionData sessionData)
+        {
+            try
+            {
+                _logger.LogInformation($"Performing full socket recreation for session {sessionName}");
+                
+                // 1. Dispose old socket properly
+                if (sessionData.Socket != null)
+                {
+                    sessionData.Socket.CleanupSession();
+                    sessionData.Socket = null;
+                }
+
+                // 2. Validate credentials before recreation
+                var credentialsValid = await ValidateStoredCredentials(sessionName);
+                if (!credentialsValid)
+                {
+                    _logger.LogWarning($"Stored credentials invalid for session {sessionName}, skipping full recreation");
+                    return false;
+                }
+
+                // 3. Recreate session using existing logic
+                var config = new SocketConfig() { SessionName = sessionName };
+                var credsFile = FindOrMigrateCredentialsFile(sessionName, config.CacheRoot);
+                
+                if (File.Exists(credsFile))
+                {
+                    var authentication = AuthenticationCreds.Deserialize(File.ReadAllText(credsFile));
+                    config.AuthenticationCredentials = authentication;
+                    
+                    var socket = new WASocket(config);
+                    sessionData.Socket = socket;
+                    sessionData.Config = config;
+                    
+                    // Setup event handlers
+                    socket.EV.Connection.Update += (sender, e) => Connection_UpdateAsync(sender, e, sessionName);
+                    socket.EV.Creds.Update += (sender, e) => Auth_UpdateAsync(sender, e, sessionName);
+                    
+                    socket.MakeSocket();
+                    await Task.Delay(5000); // Wait longer for full recreation
+                    
+                    return sessionData.IsConnected;
+                }
+                
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to recreate socket for session {sessionName}");
+                return false;
+            }
+        }
+
+        private async Task<bool> CredentialRefreshReconnection(string sessionName, SessionData sessionData)
+        {
+            try
+            {
+                _logger.LogInformation($"Attempting credential refresh reconnection for session {sessionName}");
+                
+                // Check if credentials are too old and might need refresh
+                var config = new SocketConfig() { SessionName = sessionName };
+                var credsFile = FindOrMigrateCredentialsFile(sessionName, config.CacheRoot);
+                
+                if (File.Exists(credsFile))
+                {
+                    var credsAge = DateTime.UtcNow - File.GetLastWriteTimeUtc(credsFile);
+                    if (credsAge > TimeSpan.FromDays(7))
+                    {
+                        _logger.LogWarning($"Credentials for session {sessionName} are {credsAge.Days} days old, may need manual refresh");
+                    }
+                }
+                
+                // Attempt full recreation with existing credentials
+                return await FullSocketRecreation(sessionName, sessionData);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Credential refresh reconnection failed for session {sessionName}");
+                return false;
+            }
+        }
+
+        private async Task<bool> ForceSessionRestart(string sessionName, SessionData sessionData)
+        {
+            try
+            {
+                _logger.LogWarning($"Performing force session restart for session {sessionName} - last resort attempt");
+                
+                // Complete session restart - dispose everything and recreate from scratch
+                await StopSessionAsync(sessionName, CancellationToken.None);
+                await Task.Delay(2000); // Brief pause
+                
+                // Restart session
+                var result = await StartSessionAsync(sessionName);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Force session restart failed for session {sessionName}");
+                return false;
+            }
+        }
+
+        private async Task<bool> ValidateStoredCredentials(string sessionName)
+        {
+            try
+            {
+                var config = new SocketConfig() { SessionName = sessionName };
+                var credsFile = FindOrMigrateCredentialsFile(sessionName, config.CacheRoot);
+                
+                if (!File.Exists(credsFile))
+                {
+                    _logger.LogWarning($"No credentials file found for session {sessionName}");
+                    return false;
+                }
+
+                var authState = AuthenticationCreds.Deserialize(File.ReadAllText(credsFile));
+                
+                // Basic validation checks
+                if (authState?.Creds?.NoiseKey == null || authState?.Creds?.SignedIdentityKey == null)
+                {
+                    _logger.LogWarning($"Invalid or incomplete credentials for session {sessionName}");
+                    return false;
+                }
+                
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to validate credentials for session {sessionName}");
+                return false;
+            }
+        }
+
+        private async Task NotifyReconnectionFailure(string sessionName, SessionData sessionData)
+        {
+            try
+            {
+                _logger.LogError($"All reconnection attempts failed for session {sessionName}. Manual intervention required.");
+                
+                // Could add notification to CRM system here in the future
+                // For now, just ensure the session is marked as disconnected
+                sessionData.IsConnected = false;
+                sessionData.ReconnectAttempts = 0; // Reset for future attempts
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to notify reconnection failure for session {sessionName}");
             }
         }
 
@@ -1333,6 +1588,10 @@ namespace WhatsAppApi.Services
             public int ReconnectAttempts { get; set; } = 0;
             public DateTime QRSessionStartTime { get; set; } = DateTime.MinValue;
             public TimeSpan MaxQRSessionDuration { get; set; } = TimeSpan.FromMinutes(10);
+            
+            // NEW: Track disconnection details for enhanced reconnection
+            public DisconnectReason LastDisconnectReason { get; set; } = DisconnectReason.None;
+            public DateTime LastDisconnectionTime { get; set; } = DateTime.MinValue;
         }
     }
 }
