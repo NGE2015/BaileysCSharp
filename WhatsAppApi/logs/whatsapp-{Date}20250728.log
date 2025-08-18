@@ -1,0 +1,26 @@
+[2025-07-28 15:35:10.380 +01:00 INF] : Deleted existing Unix socket file: /home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/app.sock
+[2025-07-28 15:35:10.395 +01:00 INF] : Listening exclusively on Unix socket: /home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/app.sock
+[2025-07-28 15:35:10.594 +01:00 INF] : WhatsApp API configured successfully. Starting application...
+[2025-07-28 15:35:10.622 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Scanning for existing WhatsApp sessions to restore...
+[2025-07-28 15:35:10.760 +01:00 WRN] Microsoft.AspNetCore.Server.Kestrel: Overriding address(es) 'http://localhost:5283'. Binding to endpoints defined via IConfiguration and/or UseKestrel() instead.
+[2025-07-28 15:35:10.775 +01:00 WRN] Microsoft.AspNetCore.Server.Kestrel: HTTP/2 is not enabled for /home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/app.sock. The endpoint is configured to use HTTP/1.1 and HTTP/2, but TLS is not enabled. HTTP/2 requires TLS application protocol negotiation. Connections to this endpoint will use HTTP/1.1.
+[2025-07-28 15:35:10.790 +01:00 INF] Microsoft.Hosting.Lifetime: Now listening on: http://unix:/home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/app.sock
+[2025-07-28 15:35:10.790 +01:00 INF] Microsoft.Hosting.Lifetime: Application started. Press Ctrl+C to shut down.
+[2025-07-28 15:35:10.791 +01:00 INF] Microsoft.Hosting.Lifetime: Hosting environment: Development
+[2025-07-28 15:35:10.791 +01:00 INF] Microsoft.Hosting.Lifetime: Content root path: /root/BaileysCSharp/WhatsAppApi
+[2025-07-28 15:35:12.629 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Scanning for sessions in directory: /home/RubyManager/web/whatsapp.rubymanager.app/sessions
+[2025-07-28 15:35:12.637 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Found 1 existing WhatsApp sessions to restore
+[2025-07-28 15:35:12.638 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Restoring WhatsApp session: 7afd5398-97c3-11eb-a990-f23c917564d6
+[2025-07-28 15:35:14.135 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Starting restoration for session: 7afd5398-97c3-11eb-a990-f23c917564d6
+[2025-07-28 15:35:14.139 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Starting session: 7afd5398-97c3-11eb-a990-f23c917564d6
+[2025-07-28 15:35:15.411 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Successfully loaded existing credentials for session 7afd5398-97c3-11eb-a990-f23c917564d6 from /home/RubyManager/web/whatsapp.rubymanager.app/sessions/7afd5398-97c3-11eb-a990-f23c917564d6/7afd5398-97c3-11eb-a990-f23c917564d6_creds.json
+[2025-07-28 15:35:15.770 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Session 7afd5398-97c3-11eb-a990-f23c917564d6 initialized and added to active sessions
+[2025-07-28 15:35:15.770 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Successfully restored session: 7afd5398-97c3-11eb-a990-f23c917564d6
+[2025-07-28 15:35:15.771 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Session restoration completed. Active sessions: 1
+[2025-07-28 15:35:19.164 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Session 7afd5398-97c3-11eb-a990-f23c917564d6 disconnected with reason: LoggedOut (401)
+[2025-07-28 15:35:19.164 +01:00 WRN] WhatsAppApi.Services.WhatsAppServiceV2: Session 7afd5398-97c3-11eb-a990-f23c917564d6 is logged out, will not auto-reconnect
+[2025-07-28 15:35:21.527 +01:00 INF] Microsoft.Hosting.Lifetime: Application is shutting down...
+[2025-07-28 15:35:26.540 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: Session 7afd5398-97c3-11eb-a990-f23c917564d6 stopped. Session files preserved at: /home/RubyManager/web/whatsapp.rubymanager.app/sessions/7afd5398-97c3-11eb-a990-f23c917564d6
+[2025-07-28 15:35:26.543 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: WhatsAppServiceV2 disposing: cleaning up resources
+[2025-07-28 15:35:26.543 +01:00 INF] WhatsAppApi.Services.WhatsAppServiceV2: WhatsAppServiceV2 disposal complete
+[2025-07-28 15:35:26.544 +01:00 INF] : WhatsApp API application shutting down

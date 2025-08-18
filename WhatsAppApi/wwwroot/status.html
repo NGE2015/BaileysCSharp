@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp API Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            color: #2c3e50;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+        }
+
+        .status-info {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+
+        .refresh-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top: 2px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .container {
+            padding: 2rem;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e3e8ee;
+        }
+
+        .card h2 {
+            font-size: 1.3rem;
+            margin-bottom: 1rem;
+            color: #2c3e50;
+            border-bottom: 2px solid #ecf0f1;
+            padding-bottom: 0.5rem;
+        }
+
+        .sessions-grid {
+            display: grid;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .session-card {
+            background: #f8f9fc;
+            border: 1px solid #e3e8ee;
+            border-radius: 6px;
+            padding: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .session-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .session-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .session-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .status-indicator {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status-connecting {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status-unknown {
+            background: #f1f3f4;
+            color: #5f6368;
+            border: 1px solid #dadce0;
+        }
+
+        .session-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+
+        .system-stats {
+            display: grid;
+            gap: 1rem;
+        }
+
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            background: #f8f9fc;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+
+        .stat-label {
+            font-weight: 500;
+            color: #2c3e50;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .logs-section {
+            grid-column: 1 / -1;
+        }
+
+        .logs-container {
+            background: #1e1e1e;
+            border-radius: 6px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+
+        .log-line {
+            padding: 0.25rem 1rem;
+            border-bottom: 1px solid #333;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-info { color: #61dafb; }
+        .log-warn { color: #ffc107; }
+        .log-error { color: #ff6b6b; }
+        .log-debug { color: #6c757d; }
+
+        .no-sessions {
+            text-align: center;
+            padding: 2rem;
+            color: #6c757d;
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            border: 1px solid #f5c6cb;
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .session-details {
+                grid-template-columns: 1fr;
+            }
+            
+            .header {
+                flex-direction: column;
+                gap: 1rem;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>WhatsApp API Monitor</h1>
+        <div class="status-info">
+            <div class="refresh-status">
+                <div class="spinner" id="loadingSpinner"></div>
+                <span id="refreshStatus">Loading...</span>
+            </div>
+            <div id="lastUpdate">Last Update: Never</div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div id="errorContainer"></div>
+        
+        <div class="dashboard-grid">
+            <div class="card">
+                <h2>Active Sessions</h2>
+                <div id="sessionsContainer">
+                    <div class="no-sessions">Loading sessions...</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>System Health</h2>
+                <div class="system-stats" id="systemStats">
+                    <div class="stat-item">
+                        <span class="stat-label">API Status</span>
+                        <span class="stat-value" id="apiStatus">Checking...</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Total Sessions</span>
+                        <span class="stat-value" id="totalSessions">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Connected</span>
+                        <span class="stat-value" id="connectedSessions">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Uptime</span>
+                        <span class="stat-value" id="uptime">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Last Check</span>
+                        <span class="stat-value" id="lastCheck">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card logs-section">
+                <h2>Recent Activity</h2>
+                <div class="logs-container" id="logsContainer">
+                    <div class="log-line log-info">Monitoring dashboard initialized...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class WhatsAppMonitor {
+            constructor() {
+                this.baseUrl = window.location.origin;
+                this.sessions = [];
+                this.startTime = Date.now();
+                this.refreshInterval = 5000; // 5 seconds
+                this.maxLogs = 100;
+                this.logs = [];
+                
+                this.init();
+            }
+
+            init() {
+                this.log('info', 'WhatsApp Monitor started');
+                this.loadData();
+                setInterval(() => this.loadData(), this.refreshInterval);
+            }
+
+            async loadData() {
+                this.showLoading(true);
+                
+                try {
+                    await this.loadSessions();
+                    await this.updateSystemStats();
+                    this.clearError();
+                    this.log('debug', `Refreshed data - ${this.sessions.length} sessions`);
+                } catch (error) {
+                    this.showError('Failed to load data: ' + error.message);
+                    this.log('error', 'Data refresh failed: ' + error.message);
+                } finally {
+                    this.showLoading(false);
+                    this.updateLastUpdate();
+                }
+            }
+
+            async loadSessions() {
+                const response = await fetch(`${this.baseUrl}/v2/WhatsAppControllerV2/activeSessions`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                this.sessions = Array.isArray(data.sessions) ? data.sessions : [];
+                
+                // Load connection status for each session
+                for (let sessionName of this.sessions) {
+                    try {
+                        const statusResponse = await fetch(
+                            `${this.baseUrl}/v2/WhatsAppControllerV2/connectionStatus?sessionName=${encodeURIComponent(sessionName)}`
+                        );
+                        if (statusResponse.ok) {
+                            const statusData = await statusResponse.json();
+                            // Store status with session for rendering
+                            const sessionIndex = this.sessions.indexOf(sessionName);
+                            if (sessionIndex !== -1) {
+                                this.sessions[sessionIndex] = {
+                                    name: sessionName,
+                                    isConnected: statusData.IsConnected,
+                                    status: statusData.IsConnected ? 'connected' : 'connecting'
+                                };
+                            }
+                        }
+                    } catch (error) {
+                        const sessionIndex = this.sessions.indexOf(sessionName);
+                        if (sessionIndex !== -1) {
+                            this.sessions[sessionIndex] = {
+                                name: sessionName,
+                                isConnected: false,
+                                status: 'error',
+                                error: error.message
+                            };
+                        }
+                    }
+                }
+                
+                this.renderSessions();
+            }
+
+            renderSessions() {
+                const container = document.getElementById('sessionsContainer');
+                
+                if (this.sessions.length === 0) {
+                    container.innerHTML = '<div class="no-sessions">No active sessions found</div>';
+                    return;
+                }
+
+                const sessionsHtml = this.sessions.map(session => {
+                    const sessionData = typeof session === 'string' ? { name: session, status: 'unknown' } : session;
+                    
+                    return `
+                        <div class="session-card">
+                            <div class="session-header">
+                                <div class="session-name">${sessionData.name}</div>
+                                <div class="status-indicator status-${sessionData.status}">
+                                    ${this.getStatusText(sessionData.status)}
+                                </div>
+                            </div>
+                            <div class="session-details">
+                                <div><strong>Connection:</strong> ${sessionData.isConnected ? 'Active' : 'Inactive'}</div>
+                                <div><strong>Status:</strong> ${this.getStatusDescription(sessionData.status)}</div>
+                                ${sessionData.error ? `<div style="grid-column: 1 / -1; color: #d32f2f;"><strong>Error:</strong> ${sessionData.error}</div>` : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                container.innerHTML = `<div class="sessions-grid">${sessionsHtml}</div>`;
+            }
+
+            getStatusText(status) {
+                const statusMap = {
+                    'connected': 'Connected',
+                    'connecting': 'Connecting',
+                    'error': 'Error',
+                    'unknown': 'Unknown'
+                };
+                return statusMap[status] || 'Unknown';
+            }
+
+            getStatusDescription(status) {
+                const descMap = {
+                    'connected': 'Ready to send/receive messages',
+                    'connecting': 'Establishing connection',
+                    'error': 'Connection failed',
+                    'unknown': 'Status unknown'
+                };
+                return descMap[status] || 'Status unknown';
+            }
+
+            async updateSystemStats() {
+                // Update API status
+                document.getElementById('apiStatus').textContent = 'Online';
+                
+                // Count sessions by status
+                const total = this.sessions.length;
+                const connected = this.sessions.filter(s => 
+                    (typeof s === 'object' && s.isConnected) || s === 'string'
+                ).length;
+                
+                document.getElementById('totalSessions').textContent = total;
+                document.getElementById('connectedSessions').textContent = connected;
+                
+                // Calculate uptime
+                const uptime = this.formatUptime(Date.now() - this.startTime);
+                document.getElementById('uptime').textContent = uptime;
+                
+                // Update last check time
+                document.getElementById('lastCheck').textContent = new Date().toLocaleTimeString();
+            }
+
+            formatUptime(ms) {
+                const seconds = Math.floor(ms / 1000);
+                const minutes = Math.floor(seconds / 60);
+                const hours = Math.floor(minutes / 60);
+                
+                if (hours > 0) return `${hours}h ${minutes % 60}m`;
+                if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+                return `${seconds}s`;
+            }
+
+            showLoading(show) {
+                const spinner = document.getElementById('loadingSpinner');
+                const status = document.getElementById('refreshStatus');
+                
+                if (show) {
+                    spinner.style.display = 'block';
+                    status.textContent = 'Refreshing...';
+                } else {
+                    spinner.style.display = 'none';
+                    status.textContent = 'Auto-refresh: 5s';
+                }
+            }
+
+            updateLastUpdate() {
+                const now = new Date().toLocaleTimeString();
+                document.getElementById('lastUpdate').textContent = `Last Update: ${now}`;
+            }
+
+            showError(message) {
+                const container = document.getElementById('errorContainer');
+                container.innerHTML = `<div class="error-message">${message}</div>`;
+                document.getElementById('apiStatus').textContent = 'Error';
+            }
+
+            clearError() {
+                document.getElementById('errorContainer').innerHTML = '';
+            }
+
+            log(level, message) {
+                const timestamp = new Date().toLocaleTimeString();
+                const logEntry = {
+                    timestamp,
+                    level,
+                    message
+                };
+                
+                this.logs.unshift(logEntry);
+                if (this.logs.length > this.maxLogs) {
+                    this.logs = this.logs.slice(0, this.maxLogs);
+                }
+                
+                this.renderLogs();
+            }
+
+            renderLogs() {
+                const container = document.getElementById('logsContainer');
+                const logsHtml = this.logs.map(log => 
+                    `<div class="log-line log-${log.level}">[${log.timestamp}] ${log.message}</div>`
+                ).join('');
+                
+                container.innerHTML = logsHtml;
+                container.scrollTop = 0; // Show newest logs at top
+            }
+        }
+
+        // Initialize the monitor when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new WhatsAppMonitor();
+        });
+    </script>
+</body>
+</html>

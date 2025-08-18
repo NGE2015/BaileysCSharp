@@ -150,6 +150,9 @@ try
     app.UseCors("AllowBlazorClient");
     app.UseCors("AllowBlazorClientRubyManager");
 
+    // Enable static file serving for monitoring dashboard
+    app.UseStaticFiles();
+
     // Add rate limiting middleware before authorization
     app.UseMiddleware<RateLimitingMiddleware>();
 
