@@ -310,10 +310,12 @@
                 this.baseUrl = window.location.origin;
                 this.sessions = [];
                 this.startTime = Date.now();
-                this.refreshInterval = 5000; // 5 seconds
+                this.refreshInterval = 15000; // 15 seconds
                 this.maxLogs = 100;
                 this.logs = [];
-                
+                this.lastRefreshTime = null;
+                this.nextRefreshTime = null;
+
                 this.init();
             }
 
@@ -321,22 +323,32 @@
                 this.log('info', 'WhatsApp Monitor started');
                 this.loadData();
                 setInterval(() => this.loadData(), this.refreshInterval);
+                // Update countdown timer every second
+                setInterval(() => this.updateRefreshCountdown(), 1000);
             }
 
             async loadData() {
                 this.showLoading(true);
-                
+                const startTime = Date.now();
+
                 try {
+                    this.log('debug', 'Loading sessions...');
                     await this.loadSessions();
+                    this.log('debug', 'Updating system stats...');
                     await this.updateSystemStats();
                     this.clearError();
-                    this.log('debug', `Refreshed data - ${this.sessions.length} sessions`);
+
+                    const duration = Date.now() - startTime;
+                    const connected = this.sessions.filter(s => typeof s === 'object' && s.isConnected).length;
+                    this.log('info', `✓ Data refreshed - ${this.sessions.length} sessions (${connected} connected) in ${duration}ms`);
+                    this.lastRefreshTime = Date.now();
                 } catch (error) {
                     this.showError('Failed to load data: ' + error.message);
                     this.log('error', 'Data refresh failed: ' + error.message);
                 } finally {
                     this.showLoading(false);
                     this.updateLastUpdate();
+                    this.nextRefreshTime = Date.now() + this.refreshInterval;
                 }
             }
 
@@ -466,13 +478,23 @@
             showLoading(show) {
                 const spinner = document.getElementById('loadingSpinner');
                 const status = document.getElementById('refreshStatus');
-                
+
                 if (show) {
                     spinner.style.display = 'block';
                     status.textContent = 'Refreshing...';
                 } else {
                     spinner.style.display = 'none';
-                    status.textContent = 'Auto-refresh: 5s';
+                    this.updateRefreshCountdown();
+                }
+            }
+
+            updateRefreshCountdown() {
+                const status = document.getElementById('refreshStatus');
+                if (this.nextRefreshTime) {
+                    const remaining = Math.max(0, Math.ceil((this.nextRefreshTime - Date.now()) / 1000));
+                    status.textContent = `Next refresh: ${remaining}s`;
+                } else {
+                    status.textContent = 'Ready';
                 }
             }
 

@@ -70,17 +70,20 @@ namespace WhatsAppApi.Controllers
                 }
 
                 var lines = System.IO.File.ReadAllLines(filePath).ToList();
-                
+
                 // Apply filters
                 var filteredLines = ApplyFilters(lines, level, search);
-                
+
+                // Reverse to show newest first
+                filteredLines.Reverse();
+
                 // Handle tail request (get most recent lines)
                 if (tail)
                 {
-                    var recentLines = filteredLines.TakeLast(pageSize).ToList();
+                    var recentLines = filteredLines.Take(pageSize).ToList();
                     return Ok(new
                     {
-                        lines = recentLines.Select((line, index) => ParseLogLine(line, filteredLines.Count - pageSize + index + 1)),
+                        lines = recentLines.Select((line, index) => ParseLogLine(line, index + 1)),
                         totalLines = filteredLines.Count,
                         page = 1,
                         pageSize,
@@ -259,6 +262,9 @@ namespace WhatsAppApi.Controllers
                         matchingLines.Add(ParseLogLine(line, i + 1));
                     }
                 }
+
+                // Reverse to show newest first
+                matchingLines.Reverse();
 
                 return Ok(new
                 {
