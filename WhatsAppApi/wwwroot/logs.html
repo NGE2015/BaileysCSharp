@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp API - Logs Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            color: #2c3e50;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+            color: white;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+
+        .container {
+            padding: 1rem;
+            max-width: 1600px;
+            margin: 0 auto;
+            height: calc(100vh - 80px);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .controls-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e3e8ee;
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+            align-items: end;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .control-group label {
+            font-weight: 500;
+            color: #2c3e50;
+            font-size: 0.9rem;
+        }
+
+        select, input, button {
+            padding: 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s;
+            font-weight: 500;
+        }
+
+        button:hover {
+            background: #2980b9;
+        }
+
+        button:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .log-viewer {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #e3e8ee;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .log-header {
+            background: #f8f9fa;
+            border-bottom: 1px solid #e3e8ee;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .log-info {
+            display: flex;
+            gap: 2rem;
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+
+        .log-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .log-content {
+            flex: 1;
+            overflow-y: auto;
+            background: #1e1e1e;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+
+        .log-line {
+            padding: 0.25rem 1rem;
+            border-bottom: 1px solid #333;
+            display: flex;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-line:hover {
+            background: #2a2a2a;
+        }
+
+        .line-number {
+            color: #666;
+            width: 60px;
+            flex-shrink: 0;
+            text-align: right;
+            margin-right: 1rem;
+            border-right: 1px solid #444;
+            padding-right: 0.5rem;
+        }
+
+        .log-content-text {
+            flex: 1;
+        }
+
+        .timestamp {
+            color: #888;
+            margin-right: 0.5rem;
+        }
+
+        .level-DEBUG { color: #6c757d; }
+        .level-INF, .level-INFO { color: #17a2b8; }
+        .level-WRN, .level-WARN { color: #ffc107; }
+        .level-ERR, .level-ERROR { color: #dc3545; }
+        .level-FATAL { color: #721c24; background: #f8d7da; }
+
+        .source {
+            color: #28a745;
+            margin-right: 0.5rem;
+        }
+
+        .message {
+            color: #e9ecef;
+        }
+
+        .no-logs {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 200px;
+            color: #6c757d;
+            font-style: italic;
+        }
+
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            border: 1px solid #f5c6cb;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            color: #6c757d;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #ddd;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 0.5rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .pagination {
+            background: #f8f9fa;
+            border-top: 1px solid #e3e8ee;
+            padding: 1rem;
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .pagination-info {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+
+        .pagination-controls {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .highlight {
+            background: #fff3cd;
+            color: #856404;
+            padding: 0.1rem 0.2rem;
+            border-radius: 3px;
+        }
+
+        .toggle-button {
+            background: #6c757d;
+        }
+
+        .toggle-button.active {
+            background: #28a745;
+        }
+
+        .search-section {
+            background: #f8f9fa;
+            border: 1px solid #e3e8ee;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+
+        .search-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr auto;
+            gap: 1rem;
+            align-items: end;
+        }
+
+        .file-info {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.85rem;
+            color: #6c757d;
+        }
+
+        @media (max-width: 768px) {
+            .controls-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .search-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header {
+                flex-direction: column;
+                gap: 1rem;
+                text-align: center;
+            }
+
+            .log-line {
+                font-size: 0.75rem;
+            }
+
+            .line-number {
+                width: 40px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🗄️ Logs Monitor</h1>
+        <div class="header-controls">
+            <button id="refreshBtn" class="toggle-button">🔄 Auto-Refresh</button>
+            <span id="lastUpdate">Last Update: Never</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div id="errorContainer"></div>
+
+        <div class="controls-panel">
+            <div class="controls-grid">
+                <div class="control-group">
+                    <label for="fileSelect">Log File:</label>
+                    <select id="fileSelect">
+                        <option value="">Select a log file...</option>
+                    </select>
+                    <div class="file-info" id="fileInfo"></div>
+                </div>
+
+                <div class="control-group">
+                    <label for="levelFilter">Log Level:</label>
+                    <select id="levelFilter">
+                        <option value="">All Levels</option>
+                        <option value="DEBUG">Debug</option>
+                        <option value="INF">Info</option>
+                        <option value="WRN">Warning</option>
+                        <option value="ERR">Error</option>
+                        <option value="FATAL">Fatal</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>Actions:</label>
+                    <div class="button-group">
+                        <button id="tailBtn">📡 Tail</button>
+                        <button id="refreshLogBtn">🔄 Refresh</button>
+                        <button id="clearBtn">🗑️ Clear</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="search-section">
+                <div class="search-grid">
+                    <div class="control-group">
+                        <label for="searchInput">Search Logs:</label>
+                        <input type="text" id="searchInput" placeholder="Enter search term...">
+                    </div>
+                    <div class="control-group">
+                        <label>&nbsp;</label>
+                        <div class="button-group">
+                            <button id="searchBtn">🔍 Search</button>
+                            <button id="regexToggle" class="toggle-button">.*</button>
+                            <button id="caseSensitiveToggle" class="toggle-button">Aa</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="log-viewer">
+            <div class="log-header">
+                <div class="log-info">
+                    <span id="currentFile">No file selected</span>
+                    <span id="logStats">0 lines</span>
+                    <span id="viewMode">View: Normal</span>
+                </div>
+                <div class="log-actions">
+                    <button id="downloadBtn">📥 Download</button>
+                    <button id="copyBtn">📋 Copy</button>
+                </div>
+            </div>
+            
+            <div class="log-content" id="logContent">
+                <div class="no-logs">Select a log file to view its contents</div>
+            </div>
+            
+            <div class="pagination" id="pagination" style="display: none;">
+                <div class="pagination-info" id="paginationInfo"></div>
+                <div class="pagination-controls">
+                    <button id="firstPageBtn">⏮️ First</button>
+                    <button id="prevPageBtn">⏪ Prev</button>
+                    <span id="pageInfo">Page 1 of 1</span>
+                    <button id="nextPageBtn">Next ⏩</button>
+                    <button id="lastPageBtn">Last ⏭️</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class LogsMonitor {
+            constructor() {
+                this.baseUrl = window.location.origin;
+                this.currentFile = null;
+                this.currentPage = 1;
+                this.pageSize = 100;
+                this.totalPages = 1;
+                this.totalLines = 0;
+                this.autoRefresh = false;
+                this.refreshInterval = null;
+                this.isTailing = false;
+                this.lastLineCount = 0;
+                this.searchHighlight = null;
+
+                this.init();
+            }
+
+            init() {
+                this.bindEvents();
+                this.loadLogFiles();
+                this.log('Logs monitor initialized');
+            }
+
+            bindEvents() {
+                // File selection
+                document.getElementById('fileSelect').addEventListener('change', (e) => {
+                    this.selectFile(e.target.value);
+                });
+
+                // Filtering
+                document.getElementById('levelFilter').addEventListener('change', () => {
+                    if (this.currentFile && !this.isTailing) {
+                        this.loadLogContent();
+                    }
+                });
+
+                // Actions
+                document.getElementById('tailBtn').addEventListener('click', () => {
+                    this.toggleTail();
+                });
+
+                document.getElementById('refreshLogBtn').addEventListener('click', () => {
+                    this.refreshCurrentLog();
+                });
+
+                document.getElementById('clearBtn').addEventListener('click', () => {
+                    this.clearLogView();
+                });
+
+                // Auto-refresh toggle
+                document.getElementById('refreshBtn').addEventListener('click', () => {
+                    this.toggleAutoRefresh();
+                });
+
+                // Search
+                document.getElementById('searchBtn').addEventListener('click', () => {
+                    this.performSearch();
+                });
+
+                document.getElementById('searchInput').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        this.performSearch();
+                    }
+                });
+
+                // Search options
+                document.getElementById('regexToggle').addEventListener('click', (e) => {
+                    e.target.classList.toggle('active');
+                });
+
+                document.getElementById('caseSensitiveToggle').addEventListener('click', (e) => {
+                    e.target.classList.toggle('active');
+                });
+
+                // Pagination
+                document.getElementById('firstPageBtn').addEventListener('click', () => {
+                    this.goToPage(1);
+                });
+
+                document.getElementById('prevPageBtn').addEventListener('click', () => {
+                    if (this.currentPage > 1) this.goToPage(this.currentPage - 1);
+                });
+
+                document.getElementById('nextPageBtn').addEventListener('click', () => {
+                    if (this.currentPage < this.totalPages) this.goToPage(this.currentPage + 1);
+                });
+
+                document.getElementById('lastPageBtn').addEventListener('click', () => {
+                    this.goToPage(this.totalPages);
+                });
+
+                // Download and copy
+                document.getElementById('downloadBtn').addEventListener('click', () => {
+                    this.downloadCurrentView();
+                });
+
+                document.getElementById('copyBtn').addEventListener('click', () => {
+                    this.copyCurrentView();
+                });
+            }
+
+            async loadLogFiles() {
+                try {
+                    const response = await fetch(`${this.baseUrl}/api/logs/files`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const data = await response.json();
+                    this.populateFileSelect(data.files);
+                } catch (error) {
+                    this.showError('Failed to load log files: ' + error.message);
+                }
+            }
+
+            populateFileSelect(files) {
+                const select = document.getElementById('fileSelect');
+                select.innerHTML = '<option value="">Select a log file...</option>';
+                
+                files.forEach(file => {
+                    const option = document.createElement('option');
+                    option.value = file.name;
+                    option.textContent = `${file.name} (${this.formatFileSize(file.size)})`;
+                    option.dataset.type = file.type;
+                    option.dataset.size = file.size;
+                    option.dataset.lastModified = file.lastModified;
+                    select.appendChild(option);
+                });
+            }
+
+            selectFile(fileName) {
+                if (!fileName) {
+                    this.clearLogView();
+                    return;
+                }
+
+                this.currentFile = fileName;
+                this.currentPage = 1;
+                this.isTailing = false;
+                this.updateFileInfo();
+                this.loadLogContent();
+                
+                document.getElementById('currentFile').textContent = fileName;
+                this.updateTailButton();
+            }
+
+            updateFileInfo() {
+                const select = document.getElementById('fileSelect');
+                const option = select.querySelector(`option[value="${this.currentFile}"]`);
+                if (option) {
+                    const size = this.formatFileSize(option.dataset.size);
+                    const date = new Date(option.dataset.lastModified).toLocaleString();
+                    document.getElementById('fileInfo').innerHTML = `Size: ${size} | Modified: ${date}`;
+                }
+            }
+
+            async loadLogContent(search = false) {
+                if (!this.currentFile) return;
+
+                this.showLoading(true);
+
+                try {
+                    const params = new URLSearchParams({
+                        fileName: this.currentFile,
+                        page: this.currentPage,
+                        pageSize: this.pageSize
+                    });
+
+                    const level = document.getElementById('levelFilter').value;
+                    if (level) params.append('level', level);
+
+                    if (search) {
+                        const searchTerm = document.getElementById('searchInput').value;
+                        if (searchTerm) params.append('search', searchTerm);
+                    }
+
+                    const response = await fetch(`${this.baseUrl}/api/logs/content?${params}`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const data = await response.json();
+                    this.displayLogContent(data);
+                    this.updatePagination(data);
+                    
+                } catch (error) {
+                    this.showError('Failed to load log content: ' + error.message);
+                } finally {
+                    this.showLoading(false);
+                }
+            }
+
+            async performSearch() {
+                const searchTerm = document.getElementById('searchInput').value.trim();
+                if (!searchTerm || !this.currentFile) return;
+
+                this.showLoading(true);
+
+                try {
+                    const params = new URLSearchParams({
+                        fileName: this.currentFile,
+                        query: searchTerm
+                    });
+
+                    const level = document.getElementById('levelFilter').value;
+                    if (level) params.append('level', level);
+
+                    const regex = document.getElementById('regexToggle').classList.contains('active');
+                    const caseSensitive = document.getElementById('caseSensitiveToggle').classList.contains('active');
+                    
+                    if (regex) params.append('regex', 'true');
+                    if (caseSensitive) params.append('caseSensitive', 'true');
+
+                    const response = await fetch(`${this.baseUrl}/api/logs/search?${params}`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const data = await response.json();
+                    this.displaySearchResults(data);
+                    this.searchHighlight = searchTerm;
+                    
+                } catch (error) {
+                    this.showError('Search failed: ' + error.message);
+                } finally {
+                    this.showLoading(false);
+                }
+            }
+
+            displayLogContent(data) {
+                const content = document.getElementById('logContent');
+                
+                if (!data.lines || data.lines.length === 0) {
+                    content.innerHTML = '<div class="no-logs">No logs found matching the current filters</div>';
+                    return;
+                }
+
+                const linesHtml = data.lines.map(line => this.formatLogLine(line)).join('');
+                content.innerHTML = linesHtml;
+                
+                this.totalLines = data.totalLines;
+                this.totalPages = data.totalPages;
+                
+                document.getElementById('logStats').textContent = `${data.totalLines} lines`;
+                document.getElementById('viewMode').textContent = data.isTail ? 'View: Tail' : 'View: Normal';
+            }
+
+            displaySearchResults(data) {
+                const content = document.getElementById('logContent');
+                
+                if (!data.matches || data.matches.length === 0) {
+                    content.innerHTML = '<div class="no-logs">No matches found for your search</div>';
+                    return;
+                }
+
+                const linesHtml = data.matches.map(line => this.formatLogLine(line)).join('');
+                content.innerHTML = linesHtml;
+                
+                document.getElementById('logStats').textContent = `${data.totalMatches} matches`;
+                document.getElementById('viewMode').textContent = `View: Search Results`;
+                
+                // Hide pagination for search results
+                document.getElementById('pagination').style.display = 'none';
+            }
+
+            formatLogLine(line) {
+                let message = line.message || line.raw;
+                
+                // Apply search highlighting
+                if (this.searchHighlight) {
+                    const regex = new RegExp(`(${this.searchHighlight})`, 'gi');
+                    message = message.replace(regex, '<span class="highlight">$1</span>');
+                }
+
+                return `
+                    <div class="log-line">
+                        <div class="line-number">${line.lineNumber}</div>
+                        <div class="log-content-text">
+                            ${line.timestamp ? `<span class="timestamp">[${line.timestamp}]</span>` : ''}
+                            ${line.level ? `<span class="level-${line.level}">[${line.level}]</span>` : ''}
+                            ${line.source ? `<span class="source">${line.source}:</span>` : ''}
+                            <span class="message">${message}</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            async toggleTail() {
+                if (!this.currentFile) return;
+
+                this.isTailing = !this.isTailing;
+                this.updateTailButton();
+
+                if (this.isTailing) {
+                    this.startTailing();
+                    document.getElementById('viewMode').textContent = 'View: Live Tail';
+                } else {
+                    this.stopTailing();
+                    this.loadLogContent();
+                }
+            }
+
+            async startTailing() {
+                if (!this.isTailing) return;
+
+                try {
+                    // Get initial tail content
+                    const params = new URLSearchParams({
+                        fileName: this.currentFile,
+                        tail: 'true',
+                        pageSize: this.pageSize
+                    });
+
+                    const level = document.getElementById('levelFilter').value;
+                    if (level) params.append('level', level);
+
+                    const response = await fetch(`${this.baseUrl}/api/logs/content?${params}`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const data = await response.json();
+                    this.displayLogContent(data);
+                    this.lastLineCount = data.totalLines;
+
+                    // Hide pagination during tailing
+                    document.getElementById('pagination').style.display = 'none';
+
+                    // Start polling for new lines
+                    this.startTailPolling();
+                    
+                } catch (error) {
+                    this.showError('Failed to start tailing: ' + error.message);
+                    this.isTailing = false;
+                    this.updateTailButton();
+                }
+            }
+
+            startTailPolling() {
+                this.tailInterval = setInterval(async () => {
+                    if (!this.isTailing) return;
+
+                    try {
+                        const response = await fetch(`${this.baseUrl}/api/logs/tail?fileName=${this.currentFile}&lastLineCount=${this.lastLineCount}`);
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        
+                        const data = await response.json();
+                        
+                        if (data.newLinesCount > 0) {
+                            this.appendNewLines(data.lines);
+                            this.lastLineCount = data.totalLineCount;
+                        }
+                        
+                    } catch (error) {
+                        console.error('Tail polling error:', error);
+                    }
+                }, 2000); // Poll every 2 seconds
+            }
+
+            stopTailing() {
+                if (this.tailInterval) {
+                    clearInterval(this.tailInterval);
+                    this.tailInterval = null;
+                }
+                document.getElementById('pagination').style.display = 'flex';
+            }
+
+            appendNewLines(newLines) {
+                const content = document.getElementById('logContent');
+                const newHtml = newLines.map(line => this.formatLogLine(line)).join('');
+                content.insertAdjacentHTML('beforeend', newHtml);
+                
+                // Auto-scroll to bottom
+                content.scrollTop = content.scrollHeight;
+                
+                // Update stats
+                document.getElementById('logStats').textContent = `${this.lastLineCount} lines`;
+            }
+
+            updateTailButton() {
+                const btn = document.getElementById('tailBtn');
+                if (this.isTailing) {
+                    btn.textContent = '⏸️ Stop Tail';
+                    btn.classList.add('active');
+                } else {
+                    btn.textContent = '📡 Tail';
+                    btn.classList.remove('active');
+                }
+            }
+
+            toggleAutoRefresh() {
+                this.autoRefresh = !this.autoRefresh;
+                const btn = document.getElementById('refreshBtn');
+                
+                if (this.autoRefresh) {
+                    btn.classList.add('active');
+                    btn.textContent = '⏸️ Auto-Refresh ON';
+                    this.refreshInterval = setInterval(() => {
+                        if (!this.isTailing && this.currentFile) {
+                            this.loadLogContent();
+                        }
+                        this.loadLogFiles(); // Refresh file list
+                    }, 10000); // Every 10 seconds
+                } else {
+                    btn.classList.remove('active');
+                    btn.textContent = '🔄 Auto-Refresh';
+                    if (this.refreshInterval) {
+                        clearInterval(this.refreshInterval);
+                        this.refreshInterval = null;
+                    }
+                }
+            }
+
+            refreshCurrentLog() {
+                if (this.currentFile) {
+                    this.loadLogContent();
+                }
+                this.loadLogFiles();
+                this.updateLastUpdate();
+            }
+
+            clearLogView() {
+                document.getElementById('logContent').innerHTML = '<div class="no-logs">Select a log file to view its contents</div>';
+                document.getElementById('currentFile').textContent = 'No file selected';
+                document.getElementById('logStats').textContent = '0 lines';
+                document.getElementById('viewMode').textContent = 'View: Normal';
+                document.getElementById('fileInfo').innerHTML = '';
+                document.getElementById('pagination').style.display = 'none';
+                this.currentFile = null;
+                this.searchHighlight = null;
+                
+                if (this.isTailing) {
+                    this.isTailing = false;
+                    this.stopTailing();
+                    this.updateTailButton();
+                }
+            }
+
+            goToPage(page) {
+                this.currentPage = page;
+                this.loadLogContent();
+            }
+
+            updatePagination(data) {
+                const pagination = document.getElementById('pagination');
+                
+                if (data.totalPages <= 1) {
+                    pagination.style.display = 'none';
+                    return;
+                }
+                
+                pagination.style.display = 'flex';
+                
+                document.getElementById('paginationInfo').textContent = 
+                    `Showing ${((data.page - 1) * data.pageSize) + 1}-${Math.min(data.page * data.pageSize, data.totalLines)} of ${data.totalLines} lines`;
+                    
+                document.getElementById('pageInfo').textContent = `Page ${data.page} of ${data.totalPages}`;
+                
+                // Update button states
+                document.getElementById('firstPageBtn').disabled = data.page === 1;
+                document.getElementById('prevPageBtn').disabled = data.page === 1;
+                document.getElementById('nextPageBtn').disabled = data.page === data.totalPages;
+                document.getElementById('lastPageBtn').disabled = data.page === data.totalPages;
+            }
+
+            downloadCurrentView() {
+                if (!this.currentFile) return;
+                
+                const content = document.getElementById('logContent');
+                const lines = Array.from(content.querySelectorAll('.log-line')).map(line => {
+                    return line.textContent.trim();
+                }).join('\n');
+                
+                this.downloadText(lines, `${this.currentFile}_filtered.txt`);
+            }
+
+            copyCurrentView() {
+                if (!this.currentFile) return;
+                
+                const content = document.getElementById('logContent');
+                const lines = Array.from(content.querySelectorAll('.log-line')).map(line => {
+                    return line.textContent.trim();
+                }).join('\n');
+                
+                navigator.clipboard.writeText(lines).then(() => {
+                    this.showMessage('Logs copied to clipboard');
+                });
+            }
+
+            downloadText(text, filename) {
+                const blob = new Blob([text], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+
+            formatFileSize(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            showLoading(show) {
+                const content = document.getElementById('logContent');
+                if (show) {
+                    content.innerHTML = '<div class="loading"><div class="spinner"></div>Loading logs...</div>';
+                }
+            }
+
+            updateLastUpdate() {
+                const now = new Date().toLocaleTimeString();
+                document.getElementById('lastUpdate').textContent = `Last Update: ${now}`;
+            }
+
+            showError(message) {
+                const container = document.getElementById('errorContainer');
+                container.innerHTML = `<div class="error-message">${message}</div>`;
+                setTimeout(() => {
+                    container.innerHTML = '';
+                }, 5000);
+            }
+
+            showMessage(message) {
+                // Simple toast-like message
+                const toast = document.createElement('div');
+                toast.style.cssText = `
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    background: #28a745;
+                    color: white;
+                    padding: 1rem;
+                    border-radius: 4px;
+                    z-index: 1000;
+                `;
+                toast.textContent = message;
+                document.body.appendChild(toast);
+                
+                setTimeout(() => {
+                    document.body.removeChild(toast);
+                }, 3000);
+            }
+
+            log(message) {
+                console.log(`[LogsMonitor] ${message}`);
+            }
+        }
+
+        // Initialize the logs monitor when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new LogsMonitor();
+        });
+    </script>
+</body>
+</html>

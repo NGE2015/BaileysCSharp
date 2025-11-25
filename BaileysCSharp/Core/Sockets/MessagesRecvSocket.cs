@@ -1,23 +1,29 @@
-using BaileysCSharp.Core.Events;
+﻿using Google.Protobuf;
+using Proto;
+using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using BaileysCSharp.Core.Extensions;
 using BaileysCSharp.Core.Helper;
 using BaileysCSharp.Core.Models;
-using BaileysCSharp.Core.Models.SenderKeys;
-using BaileysCSharp.Core.Models.Sending;
-using BaileysCSharp.Core.Types;
 using BaileysCSharp.Core.Utils;
-using BaileysCSharp.Core.WABinary;
 using BaileysCSharp.Exceptions;
-using Proto;
-using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
-using System.Text;
-using static BaileysCSharp.Core.Utils.GenericUtils;
 using static BaileysCSharp.Core.Utils.ProcessMessageUtil;
+using static BaileysCSharp.Core.Utils.GenericUtils;
 using static BaileysCSharp.Core.WABinary.Constants;
+using BaileysCSharp.Core.Events;
+using BaileysCSharp.Core.Models.Sending;
+using System.Globalization;
+using BaileysCSharp.Core.Types;
+using BaileysCSharp.Core.WABinary;
+using System.Net.Mail;
+using BaileysCSharp.LibSignal;
+using BaileysCSharp.Core.Models.SenderKeys;
+using static Proto.PaymentInfo.Types;
+using Org.BouncyCastle.Asn1.X509;
 
 namespace BaileysCSharp.Core.Sockets
 {
+
     public abstract class MessagesRecvSocket : MessagesSendSocket
     {
         //public bool SendActiveReceipts;
@@ -32,7 +38,9 @@ namespace BaileysCSharp.Core.Sockets
             events["CB:notification"] = OnNotification;
             events["CB:ack,class:message"] = OnHandleAck;
 
+
             EV.Connection.Update += Connection_Update;
+
         }
 
         private void Connection_Update(object? sender, ConnectionState e)
@@ -45,6 +53,7 @@ namespace BaileysCSharp.Core.Sockets
         }
 
         #region messages-recv
+
 
         public async Task<bool> ProcessNodeWithBuffer(BinaryNode node, string identifier, Func<BinaryNode, Task> action)
         {
@@ -103,6 +112,7 @@ namespace BaileysCSharp.Core.Sockets
 
         private async Task<bool> OnNotification(BinaryNode node)
         {
+
             return await ProcessNodeWithBuffer(node, "handling notification", HandleNotification);
         }
 
@@ -124,7 +134,7 @@ namespace BaileysCSharp.Core.Sockets
                     var participant = node.getattr("participant");
                     var fromMe = JidUtils.AreJidsSameUser(!string.IsNullOrWhiteSpace(participant) ? participant : remoteJid, Creds.Me.ID);
                     var child = GetAllBinaryNodeChildren(node).FirstOrDefault();
-                    participant = node.attrs.TryGetValue("participant", out var participantValue) ? participantValue : GetBinaryNodeChild(child, "participant")?.attrs["jid"];
+                    participant = node.attrs.ContainsKey("participant") ? node.attrs["participant"] : GetBinaryNodeChild(child, "participant")?.attrs["jid"];
                     msg.Key = msg.Key ?? new MessageKey();
                     msg.Key.RemoteJid = remoteJid;
                     msg.Key.FromMe = fromMe;
@@ -137,6 +147,7 @@ namespace BaileysCSharp.Core.Sockets
             });
 
             SendMessageAck(node);
+
         }
 
         public async Task<WebMessageInfo?> ProcessNotification(BinaryNode node)
@@ -164,7 +175,7 @@ namespace BaileysCSharp.Core.Sockets
                     break;
                 case "w:gp2":
                     result = new WebMessageInfo();
-                    HandleGroupNotification(node.attrs.TryGetValue("participant", out var participantValue) ? participantValue : "", child, result);
+                    HandleGroupNotification(node.attrs.ContainsKey("participant") ? node.attrs["participant"] : "", child, result);
                     break;
                 case "mediaretry":
                     var @event = DecodeMediaRetryNode(node);
@@ -301,6 +312,7 @@ namespace BaileysCSharp.Core.Sockets
         private RetryNode DecodeMediaRetryNode(BinaryNode node)
         {
             var rmrNode = GetBinaryNodeChild(node, "rmr");
+
             var @event = new RetryNode();
 
             var errorNode = GetBinaryNodeChild(node, "error");
@@ -429,12 +441,13 @@ namespace BaileysCSharp.Core.Sockets
 
         private async Task HandleReceipt(BinaryNode node)
         {
+
             var isLid = node.getattr("from")?.Contains("lid") ?? false;
             var participant = node.getattr("participant");
             var from = node.getattr("from");
             var recipient = node.getattr("recipient");
             var isNodeFromMe = JidUtils.AreJidsSameUser(participant ?? from, isLid ? Creds.Me.LID : Creds.Me.ID);
-            var remoteJid = (!isNodeFromMe || JidUtils.IsJidGroup(from) || JidUtils.IsJidNewsletter(from)) ? from : recipient;
+            var remoteJid =  (!isNodeFromMe || JidUtils.IsJidGroup(from) || JidUtils.IsJidNewsletter(from)) ? from : recipient;
 
             var key = new MessageKey()
             {
@@ -505,6 +518,7 @@ namespace BaileysCSharp.Core.Sockets
                     }
                 }
 
+
                 if (node.getattr("type") == "retry")
                 {
                     key.Participant = participant ?? from;
@@ -534,6 +548,8 @@ namespace BaileysCSharp.Core.Sockets
                     }
                 }
             });
+
+
         }
 
         private WebMessageInfo.Types.Status GetStatusFromReceiptType(string? type)
@@ -548,9 +564,9 @@ namespace BaileysCSharp.Core.Sockets
             {
                 enumDictionary.Add(name.ToLower(), (WebMessageInfo.Types.Status)Enum.Parse(typeof(WebMessageInfo.Types.Status), name));
             }
-            if (enumDictionary.TryGetValue(type, out var value))
+            if (enumDictionary.ContainsKey(type))
             {
-                return value;
+                return enumDictionary[type];
             }
             return WebMessageInfo.Types.Status.DeliveryAck;
         }
@@ -560,6 +576,7 @@ namespace BaileysCSharp.Core.Sockets
             var msgs = ids.Select(x => Store.GetMessage(x)).ToArray();
 
             //var msg = Store.GetMessage(key);
+
 
             var remoteJid = key.RemoteJid;
             var participant = !string.IsNullOrWhiteSpace(key.Participant) ? key.Participant : remoteJid;
@@ -602,20 +619,23 @@ namespace BaileysCSharp.Core.Sockets
                     }
 
                     await RelayMessage(remoteJid, msg, msgRelayOpts);
+
                 }
                 else
                 {
                     Logger.Debug(new { jid = key.RemoteJid, id = ids[i] }, "recv retry request, but message not available");
                 }
             }
+
+
         }
 
         private bool WillSendMessageAgain(string id, string? participant)
         {
             var key = $"{id}:{participant}";
-            if (MessageRetries.TryGetValue(id, out var value))
+            if (MessageRetries.ContainsKey(id))
             {
-                return value < MaxMsgRetryCount;
+                return MessageRetries[key] < MaxMsgRetryCount;
             }
             else
             {
@@ -626,9 +646,9 @@ namespace BaileysCSharp.Core.Sockets
         private void UpdateSendMessageAgainCount(string id, string participant)
         {
             var key = $"{id}:{participant}";
-            if (MessageRetries.TryGetValue(id, out var value))
+            if (MessageRetries.ContainsKey(id))
             {
-                MessageRetries[key] = value + 1;
+                MessageRetries[key] = MessageRetries[key] + 1;
             }
             else
             {
@@ -738,13 +758,13 @@ namespace BaileysCSharp.Core.Sockets
                         {"class", node.tag },
                     },
             };
-            if (node.attrs.TryGetValue("participant", out var participant))
+            if (node.attrs.ContainsKey("participant"))
             {
-                stanza.attrs["participant"] = participant;
+                stanza.attrs["participant"] = node.attrs["participant"];
             }
-            if (node.attrs.TryGetValue("recipient", out var recipient))
+            if (node.attrs.ContainsKey("recipient"))
             {
-                stanza.attrs["recipient"] = recipient;
+                stanza.attrs["recipient"] = node.attrs["recipient"];
             }
 
             if (node.getattr("type") != null && (node.tag != "message" || GetBinaryNodeChild(node, "unavailable") != null))
@@ -760,7 +780,6 @@ namespace BaileysCSharp.Core.Sockets
             Logger.Debug(new { recv = new { node.tag, node.attrs }, sent = stanza.attrs }, "sent ack");
             SendNode(stanza);
         }
-
         private void SendReceipt(string jid, string? participant, string type, params string[] messageIds)
         {
 
@@ -813,14 +832,15 @@ namespace BaileysCSharp.Core.Sockets
             Logger.Info(new { node.attrs, messageIds }, "sending receipt for messages");
             SendNode(node);
         }
-
         private void SendRetryRequest(BinaryNode node, bool forceIncludeKeys = false)
         {
             var msgId = node.attrs["id"];
 
             //Check Retries
-            MessageRetries.TryAdd(msgId, 0);
-
+            if (!MessageRetries.ContainsKey(msgId))
+            {
+                MessageRetries.Add(msgId, 0);
+            }
             var retryCount = MessageRetries[msgId];
             if (retryCount > MaxMsgRetryCount)
             {
@@ -896,6 +916,7 @@ namespace BaileysCSharp.Core.Sockets
                         ValidateConnectionUtil.XmppSignedPreKey(Creds.SignedPreKey),
                         new BinaryNode(){tag = "device-identity", content = deviceIdentity}
                     }
+
                 };
 
                 EV.Emit(EmitType.Update, Creds);
@@ -907,11 +928,14 @@ namespace BaileysCSharp.Core.Sockets
 
         #endregion
 
-        public async Task<MediaDownload> DownloadMediaMessage(Message message)
+
+
+        public async Task<MediaDownload> DownloadMediaMessage(WebMessageInfo message)
         {
-            if (message.ImageMessage != null)
+
+            if (message.Message.ImageMessage != null)
             {
-                var attachement = message.ImageMessage;
+                var attachement = message.Message.ImageMessage;
                 var result = await MediaMessageUtil.DownloadContentFromMessage(new ExternalBlobReference()
                 {
                     DirectPath = attachement.DirectPath,
@@ -928,9 +952,9 @@ namespace BaileysCSharp.Core.Sockets
                     Caption = attachement.Caption,
                 };
             }
-            if (message.DocumentMessage != null)
+            if (message.Message.DocumentMessage != null)
             {
-                var attachement = message.DocumentMessage;
+                var attachement = message.Message.DocumentMessage;
                 var result = await MediaMessageUtil.DownloadContentFromMessage(new ExternalBlobReference()
                 {
                     DirectPath = attachement.DirectPath,
@@ -947,9 +971,9 @@ namespace BaileysCSharp.Core.Sockets
                     Caption = attachement.Caption,
                 };
             }
-            if (message.AudioMessage != null)
+            if (message.Message.AudioMessage != null)
             {
-                var attachement = message.AudioMessage;
+                var attachement = message.Message.AudioMessage;
                 var result = await MediaMessageUtil.DownloadContentFromMessage(new ExternalBlobReference()
                 {
                     DirectPath = attachement.DirectPath,
@@ -964,9 +988,9 @@ namespace BaileysCSharp.Core.Sockets
                     MimeType = attachement.Mimetype,
                 };
             }
-            if (message.VideoMessage != null)
+            if (message.Message.VideoMessage != null)
             {
-                var attachement = message.VideoMessage;
+                var attachement = message.Message.VideoMessage;
                 var result = await MediaMessageUtil.DownloadContentFromMessage(new ExternalBlobReference()
                 {
                     DirectPath = attachement.DirectPath,
@@ -982,9 +1006,9 @@ namespace BaileysCSharp.Core.Sockets
                     Caption = attachement.Caption,
                 };
             }
-            if (message.StickerMessage != null)
+            if (message.Message.StickerMessage != null)
             {
-                var attachement = message.StickerMessage;
+                var attachement = message.Message.StickerMessage;
                 var result = await MediaMessageUtil.DownloadContentFromMessage(new ExternalBlobReference()
                 {
                     DirectPath = attachement.DirectPath,
@@ -999,9 +1023,9 @@ namespace BaileysCSharp.Core.Sockets
                     MimeType = attachement.Mimetype,
                 };
             }
-            if (message.PtvMessage != null)
+            if (message.Message.PtvMessage != null)
             {
-                var attachement = message.PtvMessage;
+                var attachement = message.Message.PtvMessage;
                 var result = await MediaMessageUtil.DownloadContentFromMessage(new ExternalBlobReference()
                 {
                     DirectPath = attachement.DirectPath,
@@ -1016,9 +1040,9 @@ namespace BaileysCSharp.Core.Sockets
                     MimeType = attachement.Mimetype,
                 };
             }
-            if (message.PtvMessage != null)
+            if (message.Message.PtvMessage != null)
             {
-                var attachement = message.PtvMessage;
+                var attachement = message.Message.PtvMessage;
                 var result = await MediaMessageUtil.DownloadContentFromMessage(new ExternalBlobReference()
                 {
                     DirectPath = attachement.DirectPath,
@@ -1033,9 +1057,9 @@ namespace BaileysCSharp.Core.Sockets
                     MimeType = attachement.Mimetype,
                 };
             }
-            if (message.ProductMessage != null)
+            if (message.Message.ProductMessage != null)
             {
-                var attachement = message.ProductMessage;
+                var attachement = message.Message.ProductMessage;
                 var result = await MediaMessageUtil.DownloadContentFromMessage(new ExternalBlobReference()
                 {
                     DirectPath = attachement.Catalog.CatalogImage.DirectPath,
@@ -1051,7 +1075,7 @@ namespace BaileysCSharp.Core.Sockets
                 };
             }
 
-            throw new NotSupportedException($"Message does not have a media attached");
+            throw new NotSupportedException($"{message.Key.Id} does not have a media attached");
         }
     }
 }
