@@ -24,8 +24,9 @@ namespace WhatsAppApi.Helper      // ← match your folder/namespace
     /// </summary>
     public static class WaBuildHelper
         {
-            // last known good build (updated 2025-05-31)
-            private static readonly uint[] Fallback = { 2, 3000, 1024961288 };
+            // last known good build (updated 2026-01-08)
+            // Current version: 2.3000.1031772734-alpha
+            private static readonly uint[] Fallback = { 2, 3000, 1031772734 };
 
         public static async Task<uint[]> GetLatestAlphaAsync()
         {
@@ -34,9 +35,10 @@ namespace WhatsAppApi.Helper      // ← match your folder/namespace
             try
             {
                 var html = await http.GetStringAsync("https://wppconnect.io/whatsapp-versions/");
-                // grabs "2.3000.1023373029-alpha"
+                // Simple and robust regex: match version numbers directly (e.g., "2.3000.1031772734-alpha")
+                // This pattern looks for the version between > and < tags, which is reliable across HTML changes
                 var match = Regex.Match(html,
-                    @"Current Version\s*</[^>]+>\s*([0-9.]+)-alpha",
+                    @">([0-9]+\.[0-9]+\.[0-9]+-alpha)<",
                     RegexOptions.IgnoreCase);
 
                 if (match.Success)
