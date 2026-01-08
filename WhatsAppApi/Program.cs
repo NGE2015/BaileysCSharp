@@ -102,7 +102,7 @@ try
 
     builder.WebHost.ConfigureKestrel(options =>
     {
-        // Unix socket only configuration - no HTTP/HTTPS ports
+        // Unix socket configuration - no HTTP/HTTPS ports
         if (string.IsNullOrEmpty(unixSocketPath))
         {
             throw new InvalidOperationException("Unix socket path is required. Configure Kestrel:UnixSocketPath in appsettings.json");
@@ -123,19 +123,27 @@ try
             Log.Information("Created Unix socket directory: {SocketDir}", socketDir);
         }
 
-        // Configure Kestrel to listen ONLY on Unix socket
+        // Configure Kestrel to listen on Unix socket
         options.ListenUnixSocket(unixSocketPath, listenOptions =>
         {
             // Configure Unix socket specific options if needed
             listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1AndHttp2;
         });
-        
-        Log.Information("Listening exclusively on Unix socket: {UnixSocketPath}", unixSocketPath);
+
+        Log.Information("Listening on Unix socket: {UnixSocketPath}", unixSocketPath);
+
+        // Check if localhost listening is enabled (for testing/development)
+        bool listenLocalhost = configuration.GetValue<bool>("Kestrel:ListenLocalhost", false);
+        int localhostPort = configuration.GetValue<int>("Kestrel:LocalhostPort", 5000);
+
+        if (listenLocalhost)
+        {
+            options.ListenLocalhost(localhostPort);
+            Log.Information("Also listening on localhost:{LocalhostPort} (development/testing)", localhostPort);
+        }
 
         // Enable synchronous I/O for compatibility
         options.AllowSynchronousIO = true;
-        
-        // Unix socket only - no additional configuration needed
     });
 
     var app = builder.Build();
