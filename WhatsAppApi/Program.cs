@@ -77,7 +77,8 @@ try
         policyBuilder.WithOrigins(
             "https://school.rubymanager.app",
             "https://developmentschool.rubymanager.app",
-            "https://demoschool.rubymanager.app"
+            "https://demoschool.rubymanager.app",
+            "https://rubymanagerbot.rubymanager.app"
         )
         .AllowAnyMethod()
         .AllowAnyHeader()
