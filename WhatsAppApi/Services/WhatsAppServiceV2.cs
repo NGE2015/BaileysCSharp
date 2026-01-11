@@ -776,6 +776,10 @@ namespace WhatsAppApi.Services
                     var responseBody = await response.Content.ReadAsStringAsync();
                     _logger.LogWarning($"CRM API returned {response.StatusCode} for session {sessionName}: {responseBody}");
                 }
+
+                // Call RubyManagerBot webhook asynchronously (fire-and-forget)
+                // This allows the webhook to handle unknown numbers independently
+                _ = Task.Run(async () => await CallRubyManagerBotWebhookAsync(sessionName, payload));
             }
             catch (TaskCanceledException)
             {
@@ -788,6 +792,61 @@ namespace WhatsAppApi.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Unexpected error saving message to CRM for session {sessionName}");
+            }
+        }
+
+        /// <summary>
+        /// Calls RubyManagerBot webhook with message data for processing unknown numbers
+        /// This is a fire-and-forget call that doesn't block message processing
+        /// </summary>
+        private async Task CallRubyManagerBotWebhookAsync(string sessionName, object messagePayload)
+        {
+            try
+            {
+                // Check if webhook is enabled
+                var webhookEnabled = _configuration["RubyManagerBotEndpoint:Enabled"];
+                if (webhookEnabled?.ToLower() != "true")
+                {
+                    _logger.LogDebug($"RubyManagerBot webhook is disabled for session {sessionName}");
+                    return;
+                }
+
+                var botBaseUrl = _configuration["RubyManagerBotEndpoint:BaseUrl"] ?? "http://localhost:5000";
+                var botEndpoint = _configuration["RubyManagerBotEndpoint:Endpoint"] ?? "/api/bot/webhook";
+                var botTimeoutSeconds = int.TryParse(_configuration["RubyManagerBotEndpoint:TimeoutSeconds"], out var timeout) ? timeout : 10;
+
+                var webhookUrl = $"{botBaseUrl}{botEndpoint}";
+
+                var jsonPayload = JsonSerializer.Serialize(messagePayload);
+                var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+
+                _logger.LogDebug($"Calling RubyManagerBot webhook for session {sessionName} at {webhookUrl}");
+
+                // Call webhook with timeout
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(botTimeoutSeconds));
+                var response = await _httpClient.PostAsync(webhookUrl, content, cts.Token);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug($"RubyManagerBot webhook call successful for session {sessionName}");
+                }
+                else
+                {
+                    var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning($"RubyManagerBot webhook returned {response.StatusCode} for session {sessionName}: {responseBody}");
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                _logger.LogWarning($"RubyManagerBot webhook call timed out for session {sessionName}");
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, $"Network error calling RubyManagerBot webhook for session {sessionName}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Unexpected error calling RubyManagerBot webhook for session {sessionName}");
             }
         }
 
