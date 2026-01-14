@@ -372,6 +372,9 @@ namespace WhatsAppApi.Services
                         if (msg.Message == null)
                             continue;
 
+                        // Log incoming message details for debugging phone number transformations
+                        _logger.LogInformation($"[PHONE_NUMBER_TRACE] Incoming message - Session: {sessionName}, RemoteJid: {msg.Key?.RemoteJid}, FromMe: {msg.Key?.FromMe}, MessageId: {msg.Key?.Id}");
+
                         // Save incoming messages to CRM asynchronously (fire-and-forget)
                         _ = Task.Run(async () =>
                         {
@@ -729,13 +732,17 @@ namespace WhatsAppApi.Services
                 }
 
                 // Extract message data
-                var senderPhone = ExtractPhoneNumber(messageInfo.Key?.RemoteJid);
+                var remoteJid = messageInfo.Key?.RemoteJid;
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] SaveMessageToCrmAsync - Raw RemoteJid from WhatsApp: {remoteJid}");
+
+                var senderPhone = ExtractPhoneNumber(remoteJid);
                 var messageContent = ExtractMessageContent(messageInfo.Message);
                 var messageType = GetMessageType(messageInfo.Message);
                 var messageId = messageInfo.Key?.Id;
-                var remoteJid = messageInfo.Key?.RemoteJid;
                 var timestamp = messageInfo.MessageTimestamp > 0 ? (long)messageInfo.MessageTimestamp : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 var receivedAt = DateTimeOffset.FromUnixTimeSeconds(timestamp).ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] Message details - Extracted Phone: {senderPhone}, MessageType: {messageType}, MessageId: {messageId}");
 
                 // Skip if no content to save
                 if (string.IsNullOrEmpty(messageContent) || string.IsNullOrEmpty(senderPhone))
@@ -759,21 +766,30 @@ namespace WhatsAppApi.Services
                 var jsonPayload = JsonSerializer.Serialize(payload);
                 var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
 
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM Payload - Full JSON: {jsonPayload}");
                 _logger.LogDebug($"Sending message to CRM for session {sessionName}: {senderPhone} - {messageContent.Substring(0, Math.Min(50, messageContent.Length))}...");
 
                 // Send to CRM API with timeout
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 var crmBaseUrl = _configuration["CrmEndpoint:BaseUrl"] ?? "https://whatsapp.rubymanager.app";
                 var crmUrl = $"{crmBaseUrl}/api/whatsappmessagehistory/saveMessage";
+
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM API - URL: {crmUrl}");
+
                 var response = await _httpClient.PostAsync(crmUrl, content, cts.Token);
 
                 if (response.IsSuccessStatusCode)
                 {
+                    var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM API SUCCESS (200) for session {sessionName}, message ID: {messageId}");
+                    _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM API - Response body: {responseBody}");
                     _logger.LogDebug($"Successfully saved message to CRM for session {sessionName}, message ID: {messageId}");
                 }
                 else
                 {
                     var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning($"[PHONE_NUMBER_TRACE] CRM API ERROR ({response.StatusCode}) for session {sessionName}");
+                    _logger.LogWarning($"[PHONE_NUMBER_TRACE] CRM API - Error response: {responseBody}");
                     _logger.LogWarning($"CRM API returned {response.StatusCode} for session {sessionName}: {responseBody}");
                 }
 
@@ -820,7 +836,8 @@ namespace WhatsAppApi.Services
                 var jsonPayload = JsonSerializer.Serialize(messagePayload);
                 var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
 
-                _logger.LogDebug($"Calling RubyManagerBot webhook for session {sessionName} at {webhookUrl}");
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - URL: {webhookUrl}");
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - Payload being sent: {jsonPayload}");
 
                 // Call webhook with timeout
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(botTimeoutSeconds));
@@ -828,11 +845,16 @@ namespace WhatsAppApi.Services
 
                 if (response.IsSuccessStatusCode)
                 {
+                    var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook SUCCESS (200) for session {sessionName}");
+                    _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - Response body: {responseBody}");
                     _logger.LogDebug($"RubyManagerBot webhook call successful for session {sessionName}");
                 }
                 else
                 {
                     var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook ERROR ({response.StatusCode}) for session {sessionName}");
+                    _logger.LogWarning($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - Error response: {responseBody}");
                     _logger.LogWarning($"RubyManagerBot webhook returned {response.StatusCode} for session {sessionName}: {responseBody}");
                 }
             }
@@ -856,11 +878,16 @@ namespace WhatsAppApi.Services
         private string ExtractPhoneNumber(string remoteJid)
         {
             if (string.IsNullOrEmpty(remoteJid))
+            {
+                _logger.LogDebug("[PHONE_NUMBER_TRACE] ExtractPhoneNumber - Input is null or empty");
                 return null;
+            }
 
             // Extract phone number from formats like "1234567890@s.whatsapp.net"
             var atIndex = remoteJid.IndexOf('@');
-            return atIndex > 0 ? remoteJid.Substring(0, atIndex) : remoteJid;
+            var extractedPhone = atIndex > 0 ? remoteJid.Substring(0, atIndex) : remoteJid;
+            _logger.LogInformation($"[PHONE_NUMBER_TRACE] Phone extraction - Input JID: {remoteJid} => Extracted: {extractedPhone}");
+            return extractedPhone;
         }
 
         /// <summary>
