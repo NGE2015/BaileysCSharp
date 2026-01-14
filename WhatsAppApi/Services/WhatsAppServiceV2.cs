@@ -417,26 +417,63 @@ namespace WhatsAppApi.Services
                     throw new Exception($"Session {sessionName} is not connected.");
                 }
 
-                _logger.LogInformation($"Attempting to send message to {remoteJid} via session {sessionName}");
-                
+                // Detect format: LID or Phone
+                bool isLidFormat = !string.IsNullOrEmpty(remoteJid) && remoteJid.Contains("@lid");
+                string formatType = isLidFormat ? "LID" : "PHONE";
+
+                _logger.LogInformation($"[FORMAT_DETECTION] Attempting to send message to {remoteJid} - Format: {formatType} via session {sessionName}");
+
                 try
                 {
                     // Add timeout to prevent indefinite hanging
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
                     await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
                     {
                         Text = message
                     }).WaitAsync(cts.Token);
 
-                    _logger.LogInformation($"Message sent successfully to {remoteJid} via session {sessionName}");
-                    
+                    _logger.LogInformation($"[FORMAT_DETECTION] Message sent successfully to {remoteJid} (Format: {formatType}) via session {sessionName}");
+
                     // Update LastActivity
                     sessionData.LastActivity = DateTime.UtcNow;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send message via session {sessionName}: {ex.Message}");
-                    
+                    // If sending to LID format fails, try to resolve to phone format
+                    if (isLidFormat)
+                    {
+                        _logger.LogWarning($"[FORMAT_FALLBACK] Failed to send to LID format {remoteJid}: {ex.Message}. Attempting fallback...");
+
+                        // Try to resolve LID to phone number for fallback
+                        var resolvedPhone = ResolveLidToPhoneNumber(sessionData, remoteJid);
+                        if (!string.IsNullOrEmpty(resolvedPhone))
+                        {
+                            _logger.LogInformation($"[FORMAT_FALLBACK] Resolved LID {remoteJid} to phone {resolvedPhone}, retrying send...");
+
+                            try
+                            {
+                                using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                                string phoneJid = JidUtils.JidEncode(resolvedPhone, "s.whatsapp.net");
+
+                                await sessionData.Socket.SendMessage(phoneJid, new TextMessageContent()
+                                {
+                                    Text = message
+                                }).WaitAsync(cts2.Token);
+
+                                _logger.LogInformation($"[FORMAT_FALLBACK] Message sent successfully using phone format: {phoneJid}");
+                                sessionData.LastActivity = DateTime.UtcNow;
+                                return; // Success with fallback
+                            }
+                            catch (Exception fallbackEx)
+                            {
+                                _logger.LogError(fallbackEx, $"[FORMAT_FALLBACK] Also failed with phone format: {fallbackEx.Message}");
+                            }
+                        }
+                    }
+
+                    _logger.LogError(ex, $"Failed to send message to {remoteJid} (Format: {formatType}) via session {sessionName}: {ex.Message}");
+
                     // Mark session as disconnected if send fails
                     sessionData.IsConnected = false;
                     throw;
@@ -468,8 +505,12 @@ namespace WhatsAppApi.Services
                 throw new Exception($"Session {sessionName} is not connected.");
             }
 
+            // Detect format: LID or Phone
+            bool isLidFormat = !string.IsNullOrEmpty(remoteJid) && remoteJid.Contains("@lid");
+            string formatType = isLidFormat ? "LID" : "PHONE";
+
             var length = mediaBytes?.Length ?? 0;
-            _logger.LogInformation($"Attempting to send media to {remoteJid} via session {sessionName}, size: {length} bytes, type: {mimeType}");
+            _logger.LogInformation($"[FORMAT_DETECTION] Attempting to send media to {remoteJid} - Format: {formatType} via session {sessionName}, size: {length} bytes, type: {mimeType}");
 
             // now hand off to Baileys
             using var ms = new MemoryStream(mediaBytes);
@@ -486,13 +527,50 @@ namespace WhatsAppApi.Services
                     }
                 ).WaitAsync(cts.Token);
 
-                _logger.LogInformation($"Media sent successfully to {remoteJid} via session {sessionName}");
+                _logger.LogInformation($"[FORMAT_DETECTION] Media sent successfully to {remoteJid} (Format: {formatType}) via session {sessionName}");
                 sessionData.LastActivity = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Failed to send media via session {sessionName}: {ex.Message}");
-                
+                // If sending to LID format fails, try to resolve to phone format
+                if (isLidFormat)
+                {
+                    _logger.LogWarning($"[FORMAT_FALLBACK] Failed to send media to LID format {remoteJid}: {ex.Message}. Attempting fallback...");
+
+                    // Try to resolve LID to phone number for fallback
+                    var resolvedPhone = ResolveLidToPhoneNumber(sessionData, remoteJid);
+                    if (!string.IsNullOrEmpty(resolvedPhone))
+                    {
+                        _logger.LogInformation($"[FORMAT_FALLBACK] Resolved LID {remoteJid} to phone {resolvedPhone}, retrying media send...");
+
+                        try
+                        {
+                            using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                            string phoneJid = JidUtils.JidEncode(resolvedPhone, "s.whatsapp.net");
+                            using var ms2 = new MemoryStream(mediaBytes);
+
+                            await sessionData.Socket.SendMessage(
+                                phoneJid,
+                                new ImageMessageContent
+                                {
+                                    Image = ms2,
+                                    Caption = caption
+                                }
+                            ).WaitAsync(cts2.Token);
+
+                            _logger.LogInformation($"[FORMAT_FALLBACK] Media sent successfully using phone format: {phoneJid}");
+                            sessionData.LastActivity = DateTime.UtcNow;
+                            return; // Success with fallback
+                        }
+                        catch (Exception fallbackEx)
+                        {
+                            _logger.LogError(fallbackEx, $"[FORMAT_FALLBACK] Also failed with phone format: {fallbackEx.Message}");
+                        }
+                    }
+                }
+
+                _logger.LogError(ex, $"Failed to send media to {remoteJid} (Format: {formatType}) via session {sessionName}: {ex.Message}");
+
                 // Mark session as disconnected if send fails
                 sessionData.IsConnected = false;
                 throw;
@@ -888,6 +966,50 @@ namespace WhatsAppApi.Services
             var extractedPhone = atIndex > 0 ? remoteJid.Substring(0, atIndex) : remoteJid;
             _logger.LogInformation($"[PHONE_NUMBER_TRACE] Phone extraction - Input JID: {remoteJid} => Extracted: {extractedPhone}");
             return extractedPhone;
+        }
+
+        /// <summary>
+        /// Resolves a LID (@lid) format JID back to a phone number using local contact store
+        /// Returns null if contact not found
+        /// </summary>
+        private string ResolveLidToPhoneNumber(SessionData sessionData, string lidJid)
+        {
+            try
+            {
+                // Extract LID number from JID (e.g., "171601257582835@lid" → "171601257582835")
+                var lidNumber = ExtractPhoneNumber(lidJid);
+
+                // Get all contacts from socket
+                var allContacts = sessionData.Socket.GetAllContact();
+
+                // Find contact with matching LID property
+                var contact = allContacts.FirstOrDefault(c =>
+                    !string.IsNullOrEmpty(c.LID) && c.LID == lidNumber);
+
+                if (contact != null && !string.IsNullOrEmpty(contact.PhoneNumber))
+                {
+                    _logger.LogInformation($"[LID_RESOLUTION] Found contact: LID={lidNumber}, Phone={contact.PhoneNumber}");
+                    return contact.PhoneNumber;
+                }
+
+                // Fallback: try to find by checking contact ID
+                var matchedContact = allContacts.FirstOrDefault(c =>
+                    JidUtils.JidDecode(c.ID)?.User == lidNumber);
+
+                if (matchedContact != null)
+                {
+                    _logger.LogInformation($"[LID_RESOLUTION] Matched by decoded JID");
+                    return matchedContact.PhoneNumber;
+                }
+
+                _logger.LogWarning($"[LID_RESOLUTION] Could not resolve LID {lidNumber} to phone number - contact may be new");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error resolving LID {lidJid} to phone number");
+                return null;
+            }
         }
 
         /// <summary>
