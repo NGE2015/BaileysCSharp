@@ -52,7 +52,13 @@ namespace BaileysCSharp.Core.Sockets
             var users = new List<BinaryNode>();
             foreach (var jid in jids)
             {
-                var user = JidDecode(jid).User;
+                var jidDecoded = JidDecode(jid);
+                if (jidDecoded == null)
+                {
+                    Logger.Warn($"Skipping invalid JID in GetUSyncDevices: {jid}");
+                    continue;
+                }
+                var user = jidDecoded.User;
                 var normalJid = JidNormalizedUser(jid);
 
                 var devices = userDevicesCache.Get<JidWidhDevice[]>(user);
@@ -286,6 +292,10 @@ namespace BaileysCSharp.Core.Sockets
             var shouldIncludeDeviceIdentity = false;
 
             var jidDecoded = JidDecode(jid);
+            if (jidDecoded == null)
+            {
+                throw new ArgumentException($"Invalid JID format: {jid}");
+            }
             var user = jidDecoded.User;
             var server = jidDecoded.Server;
 
@@ -455,6 +465,14 @@ namespace BaileysCSharp.Core.Sockets
                     }
                     var additionalDevices = await GetUSyncDevices([meId, jid], options.UseUserDevicesCache ?? false, true);
                     devices.AddRange(additionalDevices);
+
+                    // LID Format Fallback: If no devices found for LID contact, use device 0 as fallback
+                    // This occurs when sending to new/unknown LID contacts without device discovery info
+                    if (isLid && additionalDevices.Count == 0)
+                    {
+                        devices.Add(new JidWidhDevice() { User = user, Device = 0 });
+                        Logger.Warn($"[LID_DEVICE_FALLBACK] No device discovered for LID {jid}, using fallback device 0");
+                    }
                 }
 
                 List<string> allJids = new List<string>();
@@ -465,7 +483,18 @@ namespace BaileysCSharp.Core.Sockets
                     var iuser = item.User;
                     var idevice = item.Device;
                     var isMe = iuser == meUser;
-                    var addJid = JidEncode((isMe && isLid) ? Creds.Me.LID.Split(":")[0] ?? iuser : iuser, isLid ? "lid" : "s.whatsapp.net", idevice);
+
+                    // Extract LID user safely - split the LID to get the number without device
+                    // LID format is "number:device" (e.g., "351935348009:0")
+                    string lidUser = iuser;
+                    if (isMe && isLid && Creds?.Me != null && !string.IsNullOrEmpty(Creds.Me.LID))
+                    {
+                        var lidParts = Creds.Me.LID.Split(":");
+                        // Take first part (number), fallback to iuser if format is unexpected
+                        lidUser = lidParts.Length > 0 ? lidParts[0] : iuser;
+                    }
+
+                    var addJid = JidEncode(lidUser, isLid ? "lid" : "s.whatsapp.net", idevice);
                     if (isMe)
                     {
                         meJids.Add(addJid);

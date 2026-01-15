@@ -263,6 +263,13 @@ namespace BaileysCSharp.LibSignal
                 throw new SessonException("Untrusted Identity Key Error");
             }
             var chain = session.GetChain(session.CurrentRatchet.EphemeralKeyPair.Public);
+            if (chain == null)
+            {
+                throw new SessionException(
+                    "No chain available for ephemeral key. " +
+                    "This typically occurs when trying to send to a new/unknown LID contact where encryption keys are not yet fully initialized. " +
+                    "The remote session may need to be reestablished. Please retry the message.");
+            }
             if (chain.ChainType == ChainType.RECEIVING)
             {
                 throw new SessionException("Tried to encrypt on a receiving chain");
