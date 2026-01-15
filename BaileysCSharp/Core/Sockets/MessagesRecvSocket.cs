@@ -707,11 +707,29 @@ namespace BaileysCSharp.Core.Sockets
             {
                 stage = "After_Decryption",
                 remoteJid = msg.Msg.Key?.RemoteJid,
-                pushName = msg.Msg.PushName,
+                pushName = msg.Msg.PushName ?? "NULL",
                 fromMe = msg.Msg.Key?.FromMe,
                 messageId = msg.Msg.Key?.Id,
+                messageContent = msg.Msg.Message?.Conversation?.Substring(0, Math.Min(50, msg.Msg.Message?.Conversation?.Length ?? 0)) ?? "NO_TEXT",
+                hasMessage = msg.Msg.Message != null,
                 timestamp = DateTime.UtcNow
             }, "[DIAGNOSTIC] Message after decryption - PushName/RemoteJid");
+
+            // Additional detailed logging - dump all available fields
+            if (msg.Msg.Key?.RemoteJid?.Contains("@lid") == true)
+            {
+                Logger.Error(new
+                {
+                    stage = "LID_Message_Details",
+                    remoteJid = msg.Msg.Key?.RemoteJid,
+                    pushName = msg.Msg.PushName ?? "NOT_PROVIDED",
+                    verifiedBizName = msg.Msg.VerifiedBizName ?? "NOT_PROVIDED",
+                    participant = msg.Msg.Participant ?? "NOT_PROVIDED",
+                    botMessageInvokerJid = msg.Msg.BotMessageInvokerJid ?? "NOT_PROVIDED",
+                    allFields = "Check if any field contains real PN data",
+                    timestamp = DateTime.UtcNow
+                }, "[DIAGNOSTIC] LID Message - All Available Fields Logged Above");
+            }
 
             if (msg.Msg.Message?.ProtocolMessage?.Type == Message.Types.ProtocolMessage.Types.Type.SharePhoneNumber)
             {
