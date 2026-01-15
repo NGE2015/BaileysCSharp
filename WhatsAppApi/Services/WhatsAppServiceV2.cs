@@ -837,6 +837,7 @@ namespace WhatsAppApi.Services
                     messageContent = messageContent,
                     messageType = messageType,
                     remoteJid = remoteJid,
+                    replyTarget = remoteJid, // IMPORTANT: Use this exact value when sending message back via API
                     messageId = messageId,
                     receivedAt = receivedAt
                 };
@@ -916,6 +917,7 @@ namespace WhatsAppApi.Services
 
                 _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - URL: {webhookUrl}");
                 _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - Payload being sent: {jsonPayload}");
+                _logger.LogInformation($"[BOT_INSTRUCTION] When sending a message back, use the 'replyTarget' field: {messagePayload.GetType().GetProperty("replyTarget")?.GetValue(messagePayload)}");
 
                 // Call webhook with timeout
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(botTimeoutSeconds));
