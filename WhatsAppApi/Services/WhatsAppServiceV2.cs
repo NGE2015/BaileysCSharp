@@ -822,6 +822,24 @@ namespace WhatsAppApi.Services
 
                 _logger.LogInformation($"[PHONE_NUMBER_TRACE] Message details - Extracted Phone: {senderPhone}, MessageType: {messageType}, MessageId: {messageId}");
 
+                // ============================================
+                // DIAGNOSTIC LOGGING: Extract ALL available contact info from message
+                // ============================================
+                var isLidFormat = remoteJid?.EndsWith("@lid") ?? false;
+                var pushName = messageInfo.PushName ?? "NOT_PROVIDED";
+                var verifiedBizName = messageInfo.VerifiedBizName ?? "NOT_PROVIDED";
+                var participant = messageInfo.Participant ?? "NOT_PROVIDED";
+                var botInvokerJid = messageInfo.BotMessageInvokerJid ?? "NOT_PROVIDED";
+
+                _logger.LogError($"[DIAGNOSTIC] ===== INCOMING MESSAGE CONTACT DATA ===== isLid: {isLidFormat}");
+                _logger.LogError($"[DIAGNOSTIC] remoteJid: {remoteJid}");
+                _logger.LogError($"[DIAGNOSTIC] pushName (Contact Name): {pushName}");
+                _logger.LogError($"[DIAGNOSTIC] verifiedBizName: {verifiedBizName}");
+                _logger.LogError($"[DIAGNOSTIC] participant: {participant}");
+                _logger.LogError($"[DIAGNOSTIC] botMessageInvokerJid: {botInvokerJid}");
+                _logger.LogError($"[DIAGNOSTIC] messageContent preview: {(string.IsNullOrEmpty(messageContent) ? "EMPTY" : messageContent.Substring(0, Math.Min(80, messageContent.Length)))}");
+                _logger.LogError($"[DIAGNOSTIC] ===== END MESSAGE CONTACT DATA =====");
+
                 // Skip if no content to save
                 if (string.IsNullOrEmpty(messageContent) || string.IsNullOrEmpty(senderPhone))
                 {
