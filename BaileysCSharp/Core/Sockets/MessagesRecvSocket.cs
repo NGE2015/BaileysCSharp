@@ -673,6 +673,26 @@ namespace BaileysCSharp.Core.Sockets
 
         private async Task HandleMessage(BinaryNode node)
         {
+            // ============================================
+            // DIAGNOSTIC LOGGING: Extract PN and Name from incoming message
+            // ============================================
+            var from = node.getattr("from");
+            var notify = node.getattr("notify");  // Contact name
+            var senderPn = node.getattr("sender_pn");  // Real phone number (if available)
+            var messageId = node.getattr("id");
+
+            // Log RAW data from BinaryNode (before decryption)
+            Logger.Error(new
+            {
+                stage = "BinaryNode_Received",
+                from = from,
+                notify = notify,
+                sender_pn = senderPn,
+                messageId = messageId,
+                isLid = from?.EndsWith("@lid") ?? false,
+                timestamp = DateTime.UtcNow
+            }, "[DIAGNOSTIC] Message received from BinaryNode - Extracting PN/Name");
+
             if (ShouldIgnoreJid(node.getattr("from")) && node.getattr("from") != "@s.whatsapp.net")
             {
                 Logger.Debug(new { key = node.getattr("key") }, "ignored message");
@@ -682,10 +702,33 @@ namespace BaileysCSharp.Core.Sockets
 
             var msg = MessageDecoder.DecryptMessageNode(node, Creds.Me.ID, Creds.Me.LID, Repository, Logger);
 
+            // Log data AFTER decryption
+            Logger.Error(new
+            {
+                stage = "After_Decryption",
+                remoteJid = msg.Msg.Key?.RemoteJid,
+                pushName = msg.Msg.PushName,
+                fromMe = msg.Msg.Key?.FromMe,
+                messageId = msg.Msg.Key?.Id,
+                timestamp = DateTime.UtcNow
+            }, "[DIAGNOSTIC] Message after decryption - PushName/RemoteJid");
+
             if (msg.Msg.Message?.ProtocolMessage?.Type == Message.Types.ProtocolMessage.Types.Type.SharePhoneNumber)
             {
                 if (node.getattr("sender_pn") != null)
                 {
+                    // DIAGNOSTIC: SharePhoneNumber message - extract real PN
+                    var realPhoneNumber = node.getattr("sender_pn");
+                    Logger.Error(new
+                    {
+                        stage = "SharePhoneNumber",
+                        realPhoneNumber = realPhoneNumber,
+                        from = from,
+                        notify = notify,
+                        messageId = messageId,
+                        timestamp = DateTime.UtcNow
+                    }, "[DIAGNOSTIC] SharePhoneNumber detected - Real PN available");
+
                     //Share Phone Number Handle Here
                 }
             }
