@@ -116,6 +116,22 @@ namespace BaileysCSharp.Core
                 chatId = from;
             }
 
+            // ===== NEW: NORMALIZE @lid FORMAT TO REAL PN =====
+            // If message came from @lid and we have caller_pn, use PN instead
+            // This ensures entire system works with PN format, not @lid
+            bool wasLidNormalized = false;
+            if (IsLidUser(chatId) && !string.IsNullOrEmpty(callerPn))
+            {
+                logger.Error($"[LID_NORMALIZATION] Normalizing @lid to PN - Before: chatId={chatId}, author={author}");
+
+                chatId = callerPn;      // Replace @lid with actual phone number
+                author = callerPn;      // Also update author to match
+
+                wasLidNormalized = true;
+                logger.Error($"[LID_NORMALIZATION] Normalization complete - After: chatId={chatId}, author={author}");
+            }
+            // ===== END: LID NORMALIZATION =====
+
             var notify = stanza.getattr("notify");
             bool fromMe;
             if (IsLidUser(from))
@@ -157,6 +173,12 @@ namespace BaileysCSharp.Core
                 CallerPhoneNumber = callerPn,           // Store extracted phone number for @lid messages
                 SenderPhoneNumber = senderPn            // Store phone number from SharePhoneNumber protocol
             };
+
+            // Log the final message state after normalization
+            if (wasLidNormalized)
+            {
+                logger.Error($"[LID_NORMALIZATION_SUMMARY] Message normalized successfully - MsgId={msgId}, NormalizedRemoteJid={fullMessage.Key.RemoteJid}, PushName={notify}, CallerPN={callerPn}");
+            }
 
             // Notify subscribers about extracted phone numbers for caching
             if (!string.IsNullOrEmpty(callerPn) && !string.IsNullOrEmpty(msgId))
