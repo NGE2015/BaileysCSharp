@@ -888,11 +888,16 @@ namespace WhatsAppApi.Services
                     return;
                 }
 
-                // Prepare payload for CRM API
+                // Extract contact name for database and bot
+                var contactName = messageInfo.PushName ?? "Unknown Contact";
+
+                // Prepare payload for CRM API and Bot Webhook
+                // This same payload is sent to both systems
                 var payload = new
                 {
                     clientExternalId = sessionName, // Using session name as tenant ID
                     senderPhone = senderPhone,
+                    contactName = contactName,      // Contact display name (new field)
                     messageContent = messageContent,
                     messageType = messageType,
                     remoteJid = remoteJid,
@@ -904,8 +909,10 @@ namespace WhatsAppApi.Services
                 var jsonPayload = JsonSerializer.Serialize(payload);
                 var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
 
+                // Log the payload with contact name included
+                _logger.LogInformation($"[CONTACT_NAME] Including contact information - Phone: {senderPhone}, Name: {contactName}, MessageId: {messageId}");
                 _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM Payload - Full JSON: {jsonPayload}");
-                _logger.LogDebug($"Sending message to CRM for session {sessionName}: {senderPhone} - {messageContent.Substring(0, Math.Min(50, messageContent.Length))}...");
+                _logger.LogDebug($"Sending message to CRM for session {sessionName}: {senderPhone} ({contactName}) - {messageContent.Substring(0, Math.Min(50, messageContent.Length))}...");
 
                 // Send to CRM API with timeout
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -980,6 +987,10 @@ namespace WhatsAppApi.Services
                 var jsonPayload = JsonSerializer.Serialize(messagePayload);
                 var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
 
+                // Log bot webhook with contact information
+                var contactNameFromPayload = messagePayload.GetType().GetProperty("contactName")?.GetValue(messagePayload);
+                var senderPhoneFromPayload = messagePayload.GetType().GetProperty("senderPhone")?.GetValue(messagePayload);
+                _logger.LogInformation($"[CONTACT_NAME] Bot webhook receiving contact info - Phone: {senderPhoneFromPayload}, Name: {contactNameFromPayload}");
                 _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - URL: {webhookUrl}");
                 _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - Payload being sent: {jsonPayload}");
                 _logger.LogInformation($"[BOT_INSTRUCTION] When sending a message back, use the 'replyTarget' field: {messagePayload.GetType().GetProperty("replyTarget")?.GetValue(messagePayload)}");
