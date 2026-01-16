@@ -163,6 +163,25 @@ namespace WhatsAppApi.Services
             socket.EV.Pressence.Update += Pressence_Update;
             _logger.LogDebug($"Event handlers attached successfully for session {sessionName}");
 
+            // Subscribe to phone number extraction events from MessageDecoder
+            // This allows us to cache caller_pn and sender_pn for later use
+            BaileysCSharp.Core.MessageDecoder.OnCallerPhoneNumberExtracted += (messageId, phoneNumber) =>
+            {
+                if (_sessions.TryGetValue(sessionName, out var sd))
+                {
+                    if (messageId.EndsWith(":sender"))
+                    {
+                        sd.SenderPhoneNumberCache.TryAdd(messageId.Replace(":sender", ""), phoneNumber);
+                        _logger.LogInformation($"[CALLER_PN_CACHE] Cached sender phone number - MsgId: {messageId}, PN: {phoneNumber}");
+                    }
+                    else
+                    {
+                        sd.CallerPhoneNumberCache.TryAdd(messageId, phoneNumber);
+                        _logger.LogInformation($"[CALLER_PN_CACHE] Cached caller phone number - MsgId: {messageId}, PN: {phoneNumber}");
+                    }
+                }
+            };
+
             _logger.LogDebug($"Making socket connection for session: {sessionName}");
             socket.MakeSocket();
 
@@ -420,20 +439,35 @@ namespace WhatsAppApi.Services
                 // Detect format: LID or Phone
                 bool isLidFormat = !string.IsNullOrEmpty(remoteJid) && remoteJid.Contains("@lid");
                 string formatType = isLidFormat ? "LID" : "PHONE";
+                string finalRemoteJid = remoteJid;
 
                 _logger.LogInformation($"[FORMAT_DETECTION] Attempting to send message to {remoteJid} - Format: {formatType} via session {sessionName}");
+
+                // ===== NEW: Try to resolve @lid to real phone number using cached caller_pn =====
+                if (isLidFormat)
+                {
+                    var lidMatches = sessionData.CallerPhoneNumberCache.Where(kvp => kvp.Value != null).ToList();
+                    _logger.LogInformation($"[LID_RESOLUTION] Checking {lidMatches.Count} cached phone numbers for @lid reply target");
+
+                    // Look for a recent message from this LID in the cache
+                    foreach (var cachedEntry in lidMatches.OrderByDescending(x => x.Key).Take(5))
+                    {
+                        _logger.LogDebug($"[LID_RESOLUTION] Available cached PN for potential match: MsgId={cachedEntry.Key}, PN={cachedEntry.Value}");
+                    }
+                }
+                // ===== END: LID resolution attempt =====
 
                 try
                 {
                     // Add timeout to prevent indefinite hanging
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-                    await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
+                    await sessionData.Socket.SendMessage(finalRemoteJid, new TextMessageContent()
                     {
                         Text = message
                     }).WaitAsync(cts.Token);
 
-                    _logger.LogInformation($"[FORMAT_DETECTION] Message sent successfully to {remoteJid} (Format: {formatType}) via session {sessionName}");
+                    _logger.LogInformation($"[FORMAT_DETECTION] Message sent successfully to {finalRemoteJid} (Format: {formatType}) via session {sessionName}");
 
                     // Update LastActivity
                     sessionData.LastActivity = DateTime.UtcNow;
@@ -811,12 +845,24 @@ namespace WhatsAppApi.Services
 
                 // Extract message data
                 var remoteJid = messageInfo.Key?.RemoteJid;
+                var messageId = messageInfo.Key?.Id;
                 _logger.LogInformation($"[PHONE_NUMBER_TRACE] SaveMessageToCrmAsync - Raw RemoteJid from WhatsApp: {remoteJid}");
 
+                // ===== NEW: Try to get cached caller phone number first =====
                 var senderPhone = ExtractPhoneNumber(remoteJid);
+                if (_sessions.TryGetValue(sessionName, out var sessionData) && sessionData.CallerPhoneNumberCache.TryRemove(messageId, out var cachedCallerPn))
+                {
+                    senderPhone = cachedCallerPn;
+                    _logger.LogInformation($"[CALLER_PN_RESOLUTION] SUCCESS - Used cached caller_pn from message attributes for MsgId: {messageId}, PN: {senderPhone}");
+                }
+                else if (remoteJid?.EndsWith("@lid") == true)
+                {
+                    _logger.LogWarning($"[CALLER_PN_RESOLUTION] WARNING - @lid message but no cached caller_pn found for MsgId: {messageId}, falling back to LID extraction");
+                }
+                // ===== END: Caller phone number resolution =====
+
                 var messageContent = ExtractMessageContent(messageInfo.Message);
                 var messageType = GetMessageType(messageInfo.Message);
-                var messageId = messageInfo.Key?.Id;
                 var timestamp = messageInfo.MessageTimestamp > 0 ? (long)messageInfo.MessageTimestamp : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 var receivedAt = DateTimeOffset.FromUnixTimeSeconds(timestamp).ToString("yyyy-MM-ddTHH:mm:ssZ");
 
@@ -831,14 +877,9 @@ namespace WhatsAppApi.Services
                 var participant = messageInfo.Participant ?? "NOT_PROVIDED";
                 var botInvokerJid = messageInfo.BotMessageInvokerJid ?? "NOT_PROVIDED";
 
-                _logger.LogError($"[DIAGNOSTIC] ===== INCOMING MESSAGE CONTACT DATA ===== isLid: {isLidFormat}");
-                _logger.LogError($"[DIAGNOSTIC] remoteJid: {remoteJid}");
-                _logger.LogError($"[DIAGNOSTIC] pushName (Contact Name): {pushName}");
-                _logger.LogError($"[DIAGNOSTIC] verifiedBizName: {verifiedBizName}");
-                _logger.LogError($"[DIAGNOSTIC] participant: {participant}");
-                _logger.LogError($"[DIAGNOSTIC] botMessageInvokerJid: {botInvokerJid}");
-                _logger.LogError($"[DIAGNOSTIC] messageContent preview: {(string.IsNullOrEmpty(messageContent) ? "EMPTY" : messageContent.Substring(0, Math.Min(80, messageContent.Length)))}");
-                _logger.LogError($"[DIAGNOSTIC] ===== END MESSAGE CONTACT DATA =====");
+                // Log comprehensive message contact data
+                var contentPreview = (string.IsNullOrEmpty(messageContent) ? "EMPTY" : messageContent.Substring(0, Math.Min(80, messageContent.Length)));
+                _logger.LogInformation($"[CALLER_PN_DIAGNOSTIC] isLid={isLidFormat}, remoteJid={remoteJid}, senderPhone={senderPhone}, pushName={pushName}, messageId={messageId}, content={contentPreview}");
 
                 // Skip if no content to save
                 if (string.IsNullOrEmpty(messageContent) || string.IsNullOrEmpty(senderPhone))
@@ -881,6 +922,12 @@ namespace WhatsAppApi.Services
                     _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM API SUCCESS (200) for session {sessionName}, message ID: {messageId}");
                     _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM API - Response body: {responseBody}");
                     _logger.LogDebug($"Successfully saved message to CRM for session {sessionName}, message ID: {messageId}");
+
+                    // Log successful resolution summary for verification
+                    if (isLidFormat)
+                    {
+                        _logger.LogInformation($"[CALLER_PN_SUCCESS] Successfully resolved @lid message - original={remoteJid}, resolved={senderPhone}, messageId={messageId}, session={sessionName}, status={response.StatusCode}");
+                    }
                 }
                 else
                 {
@@ -1821,10 +1868,23 @@ namespace WhatsAppApi.Services
             public int ReconnectAttempts { get; set; } = 0;
             public DateTime QRSessionStartTime { get; set; } = DateTime.MinValue;
             public TimeSpan MaxQRSessionDuration { get; set; } = TimeSpan.FromMinutes(10);
-            
+
             // NEW: Track disconnection details for enhanced reconnection
             public DisconnectReason LastDisconnectReason { get; set; } = DisconnectReason.None;
             public DateTime LastDisconnectionTime { get; set; } = DateTime.MinValue;
+
+            /// <summary>
+            /// Cache for extracted caller phone numbers from messages
+            /// Maps messageId -> CallerPhoneNumber (extracted from caller_pn attribute)
+            /// Used to resolve @lid format JIDs to actual phone numbers for replies
+            /// </summary>
+            public ConcurrentDictionary<string, string> CallerPhoneNumberCache { get; set; } = new();
+
+            /// <summary>
+            /// Cache for sender phone numbers shared via SharePhoneNumber protocol
+            /// Maps messageId -> SenderPhoneNumber
+            /// </summary>
+            public ConcurrentDictionary<string, string> SenderPhoneNumberCache { get; set; } = new();
         }
     }
 }

@@ -18,6 +18,12 @@ namespace BaileysCSharp.Core
 
     public class MessageDecoder
     {
+        /// <summary>
+        /// Callback action to notify when caller phone number is extracted from a message
+        /// Allows the caller to cache the phone number for later use
+        /// </summary>
+        public static Action<string, string> OnCallerPhoneNumberExtracted { get; set; }
+
         public static MessageDecryptor DecryptMessageNode(BinaryNode stanza, string meId, string meLid, SignalRepository repository, DefaultLogger logger)
         {
 
@@ -29,6 +35,11 @@ namespace BaileysCSharp.Core
             var from = stanza.attrs["from"];
             var participant = stanza.getattr("participant");
             var recipient = stanza.getattr("recipient");
+
+            // Extract phone numbers from message attributes (Bailey's v7 feature)
+            // These contain the actual phone number when messaging unknown contacts (@lid format)
+            var callerPn = stanza.getattr("caller_pn");      // Phone number for incoming calls/messages from unknown
+            var senderPn = stanza.getattr("sender_pn");      // Phone number explicitly shared by sender
 
             if (IsJidUser(from))
             {
@@ -136,14 +147,43 @@ namespace BaileysCSharp.Core
             }
 
 
-            return new MessageDecryptor(repository)
+            var msgDecryptor = new MessageDecryptor(repository)
             {
                 Stanza = stanza,
                 Msg = fullMessage,
                 Author = author,
                 Category = stanza.getattr("category") ?? "",
-                Sender = msgType == "chat" ? author : chatId
+                Sender = msgType == "chat" ? author : chatId,
+                CallerPhoneNumber = callerPn,           // Store extracted phone number for @lid messages
+                SenderPhoneNumber = senderPn            // Store phone number from SharePhoneNumber protocol
             };
+
+            // Notify subscribers about extracted phone numbers for caching
+            if (!string.IsNullOrEmpty(callerPn) && !string.IsNullOrEmpty(msgId))
+            {
+                try
+                {
+                    OnCallerPhoneNumberExtracted?.Invoke(msgId, callerPn);
+                }
+                catch (Exception ex)
+                {
+                    logger.Error($"Error notifying caller phone number extraction: {ex.Message}");
+                }
+            }
+
+            if (!string.IsNullOrEmpty(senderPn) && !string.IsNullOrEmpty(msgId))
+            {
+                try
+                {
+                    OnCallerPhoneNumberExtracted?.Invoke($"{msgId}:sender", senderPn);
+                }
+                catch (Exception ex)
+                {
+                    logger.Error($"Error notifying sender phone number extraction: {ex.Message}");
+                }
+            }
+
+            return msgDecryptor;
         }
 
     }
