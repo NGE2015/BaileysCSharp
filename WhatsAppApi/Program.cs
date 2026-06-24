@@ -161,6 +161,9 @@ try
     // Enable static file serving for monitoring dashboard
     app.UseStaticFiles();
 
+    // Protect /api/logs/* with dashboard password
+    app.UseMiddleware<DashboardAuthMiddleware>();
+
     // Add rate limiting middleware before authorization
     app.UseMiddleware<RateLimitingMiddleware>();
 

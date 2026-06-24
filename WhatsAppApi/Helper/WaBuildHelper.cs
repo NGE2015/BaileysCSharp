@@ -24,34 +24,44 @@ namespace WhatsAppApi.Helper      // ← match your folder/namespace
     /// </summary>
     public static class WaBuildHelper
         {
-            // last known good build (updated 2026-01-08)
-            // Current version: 2.3000.1031772734-alpha
-            private static readonly uint[] Fallback = { 2, 3000, 1031772734 };
+            // last known good build (updated 2026-06-24)
+            // Current version: 2.3000.1042026337-alpha
+            private static readonly uint[] Fallback = { 2, 3000, 1042026337 };
+
+            public static uint[] LastResolvedVersion { get; private set; } = Fallback;
 
         public static async Task<uint[]> GetLatestAlphaAsync()
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
 
             try
             {
                 var html = await http.GetStringAsync("https://wppconnect.io/whatsapp-versions/");
-                // Simple and robust regex: match version numbers directly (e.g., "2.3000.1031772734-alpha")
-                // This pattern looks for the version between > and < tags, which is reliable across HTML changes
+                // Capture only the numeric part before "-alpha" so uint.Parse succeeds.
+                // Previous bug: the -alpha suffix was included in group 1, causing FormatException.
                 var match = Regex.Match(html,
-                    @">([0-9]+\.[0-9]+\.[0-9]+-alpha)<",
+                    @">([0-9]+\.[0-9]+\.[0-9]+)-alpha<",
                     RegexOptions.IgnoreCase);
 
                 if (match.Success)
-                    return match.Groups[1].Value
-                                .Split('.')
-                                .Select(uint.Parse)
-                                .ToArray();
+                {
+                    var parts = match.Groups[1].Value.Split('.');
+                    if (parts.Length == 3 &&
+                        uint.TryParse(parts[0], out var major) &&
+                        uint.TryParse(parts[1], out var minor) &&
+                        uint.TryParse(parts[2], out var patch))
+                    {
+                        LastResolvedVersion = new[] { major, minor, patch };
+                        return LastResolvedVersion;
+                    }
+                }
             }
             catch
             {
                 // network error, HTML format changed, etc.
             }
 
+            LastResolvedVersion = Fallback;
             return Fallback;
         }
     }

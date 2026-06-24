@@ -8,6 +8,7 @@ on:
       - feature/revert-baileys-core-for-testing
       - feature/whatsapp-enhanced-reconnection
       - feature/bot-whatsapp-response
+      - feature/dashboard-v2
 
 jobs:
   build:
