@@ -319,11 +319,26 @@
     </style>
 </head>
 <body>
+
+<!-- Login overlay (same pattern as status.html) -->
+<div id="loginOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000">
+    <div style="background:#fff;border-radius:12px;padding:2.5rem;width:340px;box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center">
+        <h2 style="margin-bottom:.5rem;font-size:1.4rem">Logs Monitor</h2>
+        <p style="color:#666;font-size:.85rem;margin-bottom:1.5rem">Enter your dashboard password</p>
+        <input type="password" id="loginPw" placeholder="Password" style="width:100%;padding:.75rem 1rem;border:1px solid #ddd;border-radius:6px;font-size:1rem;margin-bottom:.75rem;outline:none">
+        <button onclick="doLogin()" style="width:100%;padding:.75rem;background:#3498db;color:#fff;border:none;border-radius:6px;font-size:1rem;cursor:pointer;font-weight:600">Sign in</button>
+        <div id="loginErr" style="color:#e53935;font-size:.85rem;margin-top:.5rem;min-height:1.2em"></div>
+    </div>
+</div>
+
+<div id="app" style="display:none">
     <div class="header">
         <h1>🗄️ Logs Monitor</h1>
         <div class="header-controls">
             <button id="refreshBtn" class="toggle-button">🔄 Auto-Refresh</button>
             <span id="lastUpdate">Last Update: Never</span>
+            <a href="status.html" style="color:white;text-decoration:none;padding:.35rem .8rem;background:rgba(255,255,255,.2);border-radius:4px;font-size:.85rem">📊 Status</a>
+            <button onclick="doLogout()" style="background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);color:#fff;padding:.35rem .8rem;border-radius:4px;cursor:pointer;font-size:.82rem">Logout</button>
         </div>
     </div>
 
@@ -376,6 +391,16 @@
                             <button id="caseSensitiveToggle" class="toggle-button">Aa</button>
                         </div>
                     </div>
+                </div>
+                <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+                    <span style="font-size:.82rem;color:#6c757d;font-weight:500">Quick filters:</span>
+                    <button class="quick-filter" data-q="QR code" title="QR generation events">📱 QR Events</button>
+                    <button class="quick-filter" data-q="ERR" data-level="ERR" title="All errors and fatals">🔴 Errors</button>
+                    <button class="quick-filter" data-q="WRN" data-level="WRN" title="All warnings">🟡 Warnings</button>
+                    <button class="quick-filter" data-q="session" title="Session start/stop/restore events">🔌 Sessions</button>
+                    <button class="quick-filter" data-q="connect" title="Connection state changes">📡 Connections</button>
+                    <button class="quick-filter" data-q="reconnect" title="Reconnection attempts">🔄 Reconnects</button>
+                    <button class="quick-filter" data-q="credential" title="Credential load/save events">🔑 Credentials</button>
                 </div>
             </div>
         </div>
@@ -956,10 +981,63 @@
             }
         }
 
-        // Initialize the logs monitor when page loads
-        document.addEventListener('DOMContentLoaded', () => {
-            new LogsMonitor();
+        // Wire up quick-filter buttons
+        document.querySelectorAll('.quick-filter').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const lvl = btn.dataset.level || '';
+                const q = lvl ? '' : btn.dataset.q;
+                document.getElementById('searchInput').value = btn.dataset.q;
+                if (lvl) document.getElementById('levelFilter').value = lvl;
+                monitor.performSearch();
+            });
         });
+        // Style quick-filter buttons to match existing UI
+        document.querySelectorAll('.quick-filter').forEach(b => {
+            b.style.cssText='padding:.3rem .65rem;border:1px solid #ddd;border-radius:4px;background:#fff;font-size:.78rem;cursor:pointer;color:#495057';
+            b.onmouseenter=()=>{b.style.background='#3498db';b.style.color='#fff';b.style.borderColor='#3498db'};
+            b.onmouseleave=()=>{b.style.background='#fff';b.style.color='#495057';b.style.borderColor='#ddd'};
+        });
+
+        let monitor;
+        document.addEventListener('DOMContentLoaded', () => {
+            monitor = new LogsMonitor();
+        });
+
+        // ── Auth ─────────────────────────────────────────────────────────────
+        const BASE = window.location.origin;
+
+        async function doLogin() {
+            const pw = document.getElementById('loginPw').value;
+            document.getElementById('loginErr').textContent = '';
+            try {
+                const r = await fetch(`${BASE}/api/dashboard/login`, {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ password: pw })
+                });
+                if (r.ok) { showApp(); return; }
+                document.getElementById('loginErr').textContent = 'Wrong password';
+            } catch (_) { document.getElementById('loginErr').textContent = 'Connection error'; }
+        }
+
+        async function doLogout() {
+            await fetch(`${BASE}/api/dashboard/logout`, { method: 'POST' });
+            location.reload();
+        }
+
+        document.getElementById('loginPw').addEventListener('keyup', e => { if(e.key==='Enter') doLogin(); });
+
+        function showApp() {
+            document.getElementById('loginOverlay').style.display = 'none';
+            document.getElementById('app').style.display = 'block';
+        }
+
+        (async function boot() {
+            try {
+                const r = await fetch(`${BASE}/api/dashboard/verify`);
+                if (r.ok) { showApp(); return; }
+            } catch(_) {}
+        })();
     </script>
+</div><!-- #app -->
 </body>
 </html>

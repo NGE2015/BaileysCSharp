@@ -4,546 +4,410 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WhatsApp API Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Segoe UI',Tahoma,sans-serif;background:#f0f2f5;color:#1a1a2e;line-height:1.5}
 
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f5f7fa;
-            color: #2c3e50;
-            line-height: 1.6;
-        }
+        /* ── Login overlay ── */
+        #loginOverlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000}
+        .login-card{background:#fff;border-radius:12px;padding:2.5rem;width:340px;box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center}
+        .login-card h2{margin-bottom:.5rem;font-size:1.4rem;color:#1a1a2e}
+        .login-card p{color:#666;font-size:.85rem;margin-bottom:1.5rem}
+        .login-card input{width:100%;padding:.75rem 1rem;border:1px solid #ddd;border-radius:6px;font-size:1rem;margin-bottom:.75rem;outline:none}
+        .login-card input:focus{border-color:#667eea}
+        .login-card button{width:100%;padding:.75rem;background:#667eea;color:#fff;border:none;border-radius:6px;font-size:1rem;cursor:pointer;font-weight:600}
+        .login-card button:hover{background:#5a6fd6}
+        #loginError{color:#e53935;font-size:.85rem;margin-top:.5rem;min-height:1.2em}
 
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: between;
-            align-items: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
+        /* ── Header ── */
+        .header{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:.9rem 2rem;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+        .header h1{font-size:1.4rem;font-weight:700}
+        .header-right{display:flex;align-items:center;gap:1.2rem;font-size:.85rem}
+        .header-right a{color:rgba(255,255,255,.85);text-decoration:none}
+        .header-right a:hover{color:#fff}
+        #refreshInfo{opacity:.75}
+        .btn-logout{background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);color:#fff;padding:.35rem .85rem;border-radius:6px;cursor:pointer;font-size:.82rem}
+        .btn-logout:hover{background:rgba(255,255,255,.3)}
 
-        .header h1 {
-            font-size: 1.8rem;
-            font-weight: 600;
-        }
+        /* ── Attention banner ── */
+        #attentionBanner{background:#fff3cd;border-left:4px solid #f59e0b;padding:.75rem 2rem;font-weight:600;color:#92400e;display:none;align-items:center;gap:.5rem}
 
-        .status-info {
-            display: flex;
-            gap: 2rem;
-            align-items: center;
-            font-size: 0.9rem;
-        }
+        /* ── Layout ── */
+        .container{padding:1.5rem 2rem;max-width:1300px;margin:0 auto}
+        .grid-2{display:grid;grid-template-columns:2fr 1fr;gap:1.5rem;margin-bottom:1.5rem}
+        .card{background:#fff;border-radius:10px;padding:1.25rem 1.5rem;box-shadow:0 1px 6px rgba(0,0,0,.08);border:1px solid #e8ecf0}
+        .card h2{font-size:1rem;font-weight:700;color:#374151;margin-bottom:1rem;padding-bottom:.6rem;border-bottom:2px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center}
 
-        .refresh-status {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
+        /* ── Session cards ── */
+        .session-card{border:1px solid #e5e7eb;border-radius:8px;padding:1rem 1.2rem;margin-bottom:.85rem;transition:box-shadow .2s}
+        .session-card:last-child{margin-bottom:0}
+        .session-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.6rem;gap:.5rem}
+        .session-name{font-family:monospace;font-size:.85rem;color:#374151;word-break:break-all;flex:1}
+        .badge{padding:.25rem .65rem;border-radius:20px;font-size:.75rem;font-weight:700;white-space:nowrap;text-transform:uppercase;letter-spacing:.5px}
+        .badge-connected{background:#d1fae5;color:#065f46;border:1px solid #a7f3d0}
+        .badge-qr_pending{background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe;animation:pulse 2s infinite}
+        .badge-reconnecting{background:#fef3c7;color:#92400e;border:1px solid #fde68a}
+        .badge-logged_out{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+        .badge-bad_session,.badge-restart_required{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+        .badge-disconnected,.badge-connecting{background:#f3f4f6;color:#4b5563;border:1px solid #d1d5db}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
 
-        .spinner {
-            width: 16px;
-            height: 16px;
-            border: 2px solid rgba(255,255,255,0.3);
-            border-top: 2px solid white;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            display: none;
-        }
+        .diag-why{font-size:.875rem;color:#374151;margin-bottom:.5rem}
+        .diag-action{font-size:.82rem;background:#f0fdf4;border-left:3px solid #22c55e;padding:.5rem .75rem;border-radius:4px;color:#166534;margin-bottom:.5rem}
+        .diag-action.warn{background:#fffbeb;border-color:#f59e0b;color:#92400e}
+        .diag-action.err{background:#fef2f2;border-color:#ef4444;color:#991b1b}
+        .diag-meta{display:flex;gap:1.5rem;font-size:.78rem;color:#6b7280;flex-wrap:wrap}
 
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
+        /* ── QR ── */
+        .qr-section{margin:.75rem 0;display:flex;flex-direction:column;align-items:flex-start;gap:.5rem}
+        .qr-section canvas{border:3px solid #667eea;border-radius:6px}
+        .qr-hint{font-size:.8rem;color:#4b5563;background:#f0f4ff;padding:.5rem .75rem;border-radius:6px;max-width:260px}
+        .qr-timer{font-size:.78rem;color:#6366f1;font-weight:600}
 
-        .container {
-            padding: 2rem;
-            max-width: 1400px;
-            margin: 0 auto;
-        }
+        /* ── System health ── */
+        .stat-row{display:flex;justify-content:space-between;align-items:center;padding:.55rem .6rem;border-radius:6px;background:#f9fafb;margin-bottom:.5rem;font-size:.875rem}
+        .stat-row:last-child{margin-bottom:0}
+        .stat-label{color:#4b5563;font-weight:500}
+        .stat-value{font-weight:700;color:#374151}
+        .stat-value.good{color:#059669}
+        .stat-value.warn{color:#d97706}
+        .stat-value.bad{color:#dc2626}
 
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: 2fr 1fr;
-            gap: 2rem;
-            margin-bottom: 2rem;
-        }
+        /* ── Logs tail ── */
+        .logs-full{grid-column:1/-1}
+        .log-controls{display:flex;gap:.5rem;align-items:center;margin-bottom:.75rem;flex-wrap:wrap}
+        .log-filter-btn{padding:.3rem .7rem;border:1px solid #d1d5db;border-radius:4px;background:#fff;font-size:.78rem;cursor:pointer;color:#374151}
+        .log-filter-btn:hover,.log-filter-btn.active{background:#667eea;color:#fff;border-color:#667eea}
+        .log-box{background:#111827;border-radius:6px;padding:.75rem;height:280px;overflow-y:auto;font-family:'Monaco','Menlo',monospace;font-size:.8rem;line-height:1.5}
+        .ll{padding:.1rem .5rem;border-bottom:1px solid rgba(255,255,255,.05);white-space:pre-wrap;word-break:break-all}
+        .ll:hover{background:rgba(255,255,255,.04)}
+        .l-INF,.l-INFO{color:#38bdf8}
+        .l-WRN,.l-WARN{color:#fbbf24}
+        .l-ERR,.l-ERROR{color:#f87171}
+        .l-DBG,.l-DEBUG{color:#6b7280}
+        .l-FATAL{color:#f43f5e;font-weight:bold}
+        .l-UNKNOWN{color:#9ca3af}
 
-        .card {
-            background: white;
-            border-radius: 8px;
-            padding: 1.5rem;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            border: 1px solid #e3e8ee;
-        }
+        /* ── No sessions ── */
+        .empty{text-align:center;padding:2rem;color:#9ca3af;font-size:.9rem}
 
-        .card h2 {
-            font-size: 1.3rem;
-            margin-bottom: 1rem;
-            color: #2c3e50;
-            border-bottom: 2px solid #ecf0f1;
-            padding-bottom: 0.5rem;
-        }
-
-        .sessions-grid {
-            display: grid;
-            gap: 1rem;
-            margin-top: 1rem;
-        }
-
-        .session-card {
-            background: #f8f9fc;
-            border: 1px solid #e3e8ee;
-            border-radius: 6px;
-            padding: 1rem;
-            transition: all 0.3s ease;
-        }
-
-        .session-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-
-        .session-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 0.5rem;
-        }
-
-        .session-name {
-            font-weight: 600;
-            font-size: 1.1rem;
-        }
-
-        .status-indicator {
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.85rem;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .status-connected {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-
-        .status-connecting {
-            background: #fff3cd;
-            color: #856404;
-            border: 1px solid #ffeaa7;
-        }
-
-        .status-error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-
-        .status-unknown {
-            background: #f1f3f4;
-            color: #5f6368;
-            border: 1px solid #dadce0;
-        }
-
-        .session-details {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.5rem;
-            font-size: 0.9rem;
-            color: #6c757d;
-        }
-
-        .system-stats {
-            display: grid;
-            gap: 1rem;
-        }
-
-        .stat-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0.75rem;
-            background: #f8f9fc;
-            border-radius: 6px;
-            border-left: 4px solid #667eea;
-        }
-
-        .stat-label {
-            font-weight: 500;
-            color: #2c3e50;
-        }
-
-        .stat-value {
-            font-weight: 600;
-            color: #667eea;
-        }
-
-        .logs-section {
-            grid-column: 1 / -1;
-        }
-
-        .logs-container {
-            background: #1e1e1e;
-            border-radius: 6px;
-            height: 400px;
-            overflow-y: auto;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            font-size: 0.85rem;
-            line-height: 1.4;
-        }
-
-        .log-line {
-            padding: 0.25rem 1rem;
-            border-bottom: 1px solid #333;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-
-        .log-info { color: #61dafb; }
-        .log-warn { color: #ffc107; }
-        .log-error { color: #ff6b6b; }
-        .log-debug { color: #6c757d; }
-
-        .no-sessions {
-            text-align: center;
-            padding: 2rem;
-            color: #6c757d;
-        }
-
-        .error-message {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 1rem;
-            border-radius: 6px;
-            margin-bottom: 1rem;
-            border: 1px solid #f5c6cb;
-        }
-
-        @media (max-width: 768px) {
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-            
-            .session-details {
-                grid-template-columns: 1fr;
-            }
-            
-            .header {
-                flex-direction: column;
-                gap: 1rem;
-                text-align: center;
-            }
-        }
+        @media(max-width:800px){.grid-2{grid-template-columns:1fr}}
     </style>
 </head>
 <body>
+
+<!-- Login overlay -->
+<div id="loginOverlay">
+    <div class="login-card">
+        <h2>WhatsApp API Monitor</h2>
+        <p>Enter your dashboard password to continue</p>
+        <input type="password" id="passwordInput" placeholder="Password" autocomplete="current-password">
+        <button onclick="doLogin()">Sign in</button>
+        <div id="loginError"></div>
+    </div>
+</div>
+
+<!-- Main app (hidden until auth) -->
+<div id="app" style="display:none">
     <div class="header">
         <h1>WhatsApp API Monitor</h1>
-        <div class="status-info">
-            <div class="refresh-status">
-                <div class="spinner" id="loadingSpinner"></div>
-                <span id="refreshStatus">Loading...</span>
-            </div>
-            <div id="lastUpdate">Last Update: Never</div>
-            <a href="logs.html" style="color: white; text-decoration: none; padding: 0.5rem 1rem; background: rgba(255,255,255,0.2); border-radius: 4px; margin-left: 1rem;">📋 View Logs</a>
+        <div class="header-right">
+            <span id="refreshInfo">Refreshing...</span>
+            <a href="logs.html">Logs</a>
+            <button class="btn-logout" onclick="doLogout()">Logout</button>
         </div>
+    </div>
+
+    <div id="attentionBanner">
+        <span>⚠️</span> <span id="attentionText"></span>
     </div>
 
     <div class="container">
-        <div id="errorContainer"></div>
-        
-        <div class="dashboard-grid">
+        <div class="grid-2">
+            <!-- Sessions -->
             <div class="card">
-                <h2>Active Sessions</h2>
-                <div id="sessionsContainer">
-                    <div class="no-sessions">Loading sessions...</div>
-                </div>
+                <h2>Sessions <span id="sessionCount" style="font-size:.8rem;color:#9ca3af;font-weight:400"></span></h2>
+                <div id="sessionsContainer"><div class="empty">Loading...</div></div>
             </div>
 
+            <!-- System health -->
             <div class="card">
                 <h2>System Health</h2>
-                <div class="system-stats" id="systemStats">
-                    <div class="stat-item">
-                        <span class="stat-label">API Status</span>
-                        <span class="stat-value" id="apiStatus">Checking...</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Total Sessions</span>
-                        <span class="stat-value" id="totalSessions">-</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Connected</span>
-                        <span class="stat-value" id="connectedSessions">-</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Uptime</span>
-                        <span class="stat-value" id="uptime">-</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Last Check</span>
-                        <span class="stat-value" id="lastCheck">-</span>
-                    </div>
+                <div id="healthContainer">
+                    <div class="stat-row"><span class="stat-label">API Status</span><span class="stat-value good" id="apiStatus">Online</span></div>
+                    <div class="stat-row"><span class="stat-label">WA Version</span><span class="stat-value" id="waVersion">—</span></div>
+                    <div class="stat-row"><span class="stat-label">Environment</span><span class="stat-value" id="envName">—</span></div>
+                    <div class="stat-row"><span class="stat-label">Sessions</span><span class="stat-value" id="sessionStats">—</span></div>
+                    <div class="stat-row"><span class="stat-label">Last refresh</span><span class="stat-value" id="lastRefresh">—</span></div>
                 </div>
             </div>
 
-            <div class="card logs-section">
-                <h2>Recent Activity</h2>
-                <div class="logs-container" id="logsContainer">
-                    <div class="log-line log-info">Monitoring dashboard initialized...</div>
-                </div>
+            <!-- Recent logs -->
+            <div class="card logs-full">
+                <h2>
+                    Recent Server Logs
+                    <div class="log-controls" style="margin:0">
+                        <button class="log-filter-btn active" data-f="">All</button>
+                        <button class="log-filter-btn" data-f="QR">QR Events</button>
+                        <button class="log-filter-btn" data-f="ERR">Errors</button>
+                        <button class="log-filter-btn" data-f="WRN">Warnings</button>
+                        <button class="log-filter-btn" data-f="session">Session</button>
+                        <button class="log-filter-btn" data-f="connect">Connection</button>
+                    </div>
+                </h2>
+                <div class="log-box" id="logBox"><div class="ll l-UNKNOWN">Loading logs...</div></div>
             </div>
         </div>
     </div>
+</div>
 
-    <script>
-        class WhatsAppMonitor {
-            constructor() {
-                this.baseUrl = window.location.origin;
-                this.sessions = [];
-                this.startTime = Date.now();
-                this.refreshInterval = 15000; // 15 seconds
-                this.maxLogs = 100;
-                this.logs = [];
-                this.lastRefreshTime = null;
-                this.nextRefreshTime = null;
+<script>
+const BASE = window.location.origin;
+let allLogLines = [];
+let activeFilter = '';
+let refreshTimer = null;
+let qrSessions = new Set();
 
-                this.init();
-            }
+// ── Auth ──────────────────────────────────────────────────────────────────────
+async function checkAuth() {
+    try {
+        const r = await fetch(`${BASE}/api/dashboard/verify`);
+        if (r.ok) { showApp(); return true; }
+    } catch (_) {}
+    return false;
+}
 
-            init() {
-                this.log('info', 'WhatsApp Monitor started');
-                this.loadData();
-                setInterval(() => this.loadData(), this.refreshInterval);
-                // Update countdown timer every second
-                setInterval(() => this.updateRefreshCountdown(), 1000);
-            }
-
-            async loadData() {
-                this.showLoading(true);
-                const startTime = Date.now();
-
-                try {
-                    this.log('debug', 'Loading sessions...');
-                    await this.loadSessions();
-                    this.log('debug', 'Updating system stats...');
-                    await this.updateSystemStats();
-                    this.clearError();
-
-                    const duration = Date.now() - startTime;
-                    const connected = this.sessions.filter(s => typeof s === 'object' && s.isConnected).length;
-                    this.log('info', `✓ Data refreshed - ${this.sessions.length} sessions (${connected} connected) in ${duration}ms`);
-                    this.lastRefreshTime = Date.now();
-                } catch (error) {
-                    this.showError('Failed to load data: ' + error.message);
-                    this.log('error', 'Data refresh failed: ' + error.message);
-                } finally {
-                    this.showLoading(false);
-                    this.updateLastUpdate();
-                    this.nextRefreshTime = Date.now() + this.refreshInterval;
-                }
-            }
-
-            async loadSessions() {
-                const response = await fetch(`${this.baseUrl}/v2/WhatsAppControllerV2/activeSessions`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                this.sessions = Array.isArray(data.sessions) ? data.sessions : [];
-                
-                // Load connection status for each session
-                for (let sessionName of this.sessions) {
-                    try {
-                        const statusResponse = await fetch(
-                            `${this.baseUrl}/v2/WhatsAppControllerV2/connectionStatus?sessionName=${encodeURIComponent(sessionName)}`
-                        );
-                        if (statusResponse.ok) {
-                            const statusData = await statusResponse.json();
-                            // Store status with session for rendering
-                            const sessionIndex = this.sessions.indexOf(sessionName);
-                            if (sessionIndex !== -1) {
-                                this.sessions[sessionIndex] = {
-                                    name: sessionName,
-                                    isConnected: statusData.IsConnected,
-                                    status: statusData.IsConnected ? 'connected' : 'connecting'
-                                };
-                            }
-                        }
-                    } catch (error) {
-                        const sessionIndex = this.sessions.indexOf(sessionName);
-                        if (sessionIndex !== -1) {
-                            this.sessions[sessionIndex] = {
-                                name: sessionName,
-                                isConnected: false,
-                                status: 'error',
-                                error: error.message
-                            };
-                        }
-                    }
-                }
-                
-                this.renderSessions();
-            }
-
-            renderSessions() {
-                const container = document.getElementById('sessionsContainer');
-                
-                if (this.sessions.length === 0) {
-                    container.innerHTML = '<div class="no-sessions">No active sessions found</div>';
-                    return;
-                }
-
-                const sessionsHtml = this.sessions.map(session => {
-                    const sessionData = typeof session === 'string' ? { name: session, status: 'unknown' } : session;
-                    
-                    return `
-                        <div class="session-card">
-                            <div class="session-header">
-                                <div class="session-name">${sessionData.name}</div>
-                                <div class="status-indicator status-${sessionData.status}">
-                                    ${this.getStatusText(sessionData.status)}
-                                </div>
-                            </div>
-                            <div class="session-details">
-                                <div><strong>Connection:</strong> ${sessionData.isConnected ? 'Active' : 'Inactive'}</div>
-                                <div><strong>Status:</strong> ${this.getStatusDescription(sessionData.status)}</div>
-                                ${sessionData.error ? `<div style="grid-column: 1 / -1; color: #d32f2f;"><strong>Error:</strong> ${sessionData.error}</div>` : ''}
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-
-                container.innerHTML = `<div class="sessions-grid">${sessionsHtml}</div>`;
-            }
-
-            getStatusText(status) {
-                const statusMap = {
-                    'connected': 'Connected',
-                    'connecting': 'Connecting',
-                    'error': 'Error',
-                    'unknown': 'Unknown'
-                };
-                return statusMap[status] || 'Unknown';
-            }
-
-            getStatusDescription(status) {
-                const descMap = {
-                    'connected': 'Ready to send/receive messages',
-                    'connecting': 'Establishing connection',
-                    'error': 'Connection failed',
-                    'unknown': 'Status unknown'
-                };
-                return descMap[status] || 'Status unknown';
-            }
-
-            async updateSystemStats() {
-                // Update API status
-                document.getElementById('apiStatus').textContent = 'Online';
-                
-                // Count sessions by status
-                const total = this.sessions.length;
-                const connected = this.sessions.filter(s => 
-                    (typeof s === 'object' && s.isConnected) || s === 'string'
-                ).length;
-                
-                document.getElementById('totalSessions').textContent = total;
-                document.getElementById('connectedSessions').textContent = connected;
-                
-                // Calculate uptime
-                const uptime = this.formatUptime(Date.now() - this.startTime);
-                document.getElementById('uptime').textContent = uptime;
-                
-                // Update last check time
-                document.getElementById('lastCheck').textContent = new Date().toLocaleTimeString();
-            }
-
-            formatUptime(ms) {
-                const seconds = Math.floor(ms / 1000);
-                const minutes = Math.floor(seconds / 60);
-                const hours = Math.floor(minutes / 60);
-                
-                if (hours > 0) return `${hours}h ${minutes % 60}m`;
-                if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-                return `${seconds}s`;
-            }
-
-            showLoading(show) {
-                const spinner = document.getElementById('loadingSpinner');
-                const status = document.getElementById('refreshStatus');
-
-                if (show) {
-                    spinner.style.display = 'block';
-                    status.textContent = 'Refreshing...';
-                } else {
-                    spinner.style.display = 'none';
-                    this.updateRefreshCountdown();
-                }
-            }
-
-            updateRefreshCountdown() {
-                const status = document.getElementById('refreshStatus');
-                if (this.nextRefreshTime) {
-                    const remaining = Math.max(0, Math.ceil((this.nextRefreshTime - Date.now()) / 1000));
-                    status.textContent = `Next refresh: ${remaining}s`;
-                } else {
-                    status.textContent = 'Ready';
-                }
-            }
-
-            updateLastUpdate() {
-                const now = new Date().toLocaleTimeString();
-                document.getElementById('lastUpdate').textContent = `Last Update: ${now}`;
-            }
-
-            showError(message) {
-                const container = document.getElementById('errorContainer');
-                container.innerHTML = `<div class="error-message">${message}</div>`;
-                document.getElementById('apiStatus').textContent = 'Error';
-            }
-
-            clearError() {
-                document.getElementById('errorContainer').innerHTML = '';
-            }
-
-            log(level, message) {
-                const timestamp = new Date().toLocaleTimeString();
-                const logEntry = {
-                    timestamp,
-                    level,
-                    message
-                };
-                
-                this.logs.unshift(logEntry);
-                if (this.logs.length > this.maxLogs) {
-                    this.logs = this.logs.slice(0, this.maxLogs);
-                }
-                
-                this.renderLogs();
-            }
-
-            renderLogs() {
-                const container = document.getElementById('logsContainer');
-                const logsHtml = this.logs.map(log => 
-                    `<div class="log-line log-${log.level}">[${log.timestamp}] ${log.message}</div>`
-                ).join('');
-                
-                container.innerHTML = logsHtml;
-                container.scrollTop = 0; // Show newest logs at top
-            }
-        }
-
-        // Initialize the monitor when page loads
-        document.addEventListener('DOMContentLoaded', () => {
-            new WhatsAppMonitor();
+async function doLogin() {
+    const pw = document.getElementById('passwordInput').value;
+    document.getElementById('loginError').textContent = '';
+    try {
+        const r = await fetch(`${BASE}/api/dashboard/login`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ password: pw })
         });
-    </script>
+        if (r.ok) { showApp(); return; }
+        document.getElementById('loginError').textContent = 'Wrong password';
+    } catch (_) {
+        document.getElementById('loginError').textContent = 'Connection error';
+    }
+}
+
+async function doLogout() {
+    await fetch(`${BASE}/api/dashboard/logout`, { method: 'POST' });
+    location.reload();
+}
+
+document.getElementById('passwordInput').addEventListener('keyup', e => { if (e.key==='Enter') doLogin(); });
+
+function showApp() {
+    document.getElementById('loginOverlay').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    startMonitor();
+}
+
+// ── Monitor loop ──────────────────────────────────────────────────────────────
+function startMonitor() {
+    loadAll();
+    scheduleNext();
+}
+
+function scheduleNext() {
+    clearTimeout(refreshTimer);
+    const interval = qrSessions.size > 0 ? 5000 : 15000;
+    refreshTimer = setTimeout(() => { loadAll(); scheduleNext(); }, interval);
+    document.getElementById('refreshInfo').textContent =
+        `Auto-refresh: ${interval/1000}s ${qrSessions.size > 0 ? '(QR active)' : ''}`;
+}
+
+async function loadAll() {
+    await Promise.all([loadDiagnostics(), loadInfo(), loadLogs()]);
+    document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString();
+}
+
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+async function loadDiagnostics() {
+    try {
+        const r = await fetch(`${BASE}/v2/WhatsAppControllerV2/allDiagnostics`);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        renderSessions(data.sessions || []);
+        document.getElementById('waVersion').textContent = data.waVersion || '—';
+    } catch (e) {
+        document.getElementById('sessionsContainer').innerHTML =
+            `<div class="empty" style="color:#ef4444">Failed to load: ${e.message}</div>`;
+    }
+}
+
+function renderSessions(sessions) {
+    qrSessions.clear();
+    const container = document.getElementById('sessionsContainer');
+
+    if (!sessions.length) {
+        container.innerHTML = '<div class="empty">No active sessions. Start one from the CRM.</div>';
+        document.getElementById('sessionCount').textContent = '';
+        hideBanner();
+        return;
+    }
+
+    const needsAttention = sessions.filter(s => s.state !== 'connected');
+    document.getElementById('sessionCount').textContent = `(${sessions.length})`;
+
+    if (needsAttention.length) {
+        showBanner(`${needsAttention.length} session${needsAttention.length>1?'s':''} need${needsAttention.length===1?'s':''} attention`);
+    } else { hideBanner(); }
+
+    document.getElementById('sessionStats').textContent =
+        `${sessions.length} total, ${sessions.filter(s=>s.isConnected).length} connected`;
+
+    container.innerHTML = sessions.map(s => renderSession(s)).join('');
+
+    // Render QR codes on canvases
+    sessions.filter(s => s.state === 'qr_pending' && s.rawQrData).forEach(s => {
+        qrSessions.add(s.sessionName);
+        const canvas = document.getElementById('qr_' + safeId(s.sessionName));
+        if (canvas && typeof QRCode !== 'undefined') {
+            QRCode.toCanvas(canvas, s.rawQrData, { width: 220, margin: 2, color: { dark:'#000', light:'#fff' } }, err => {
+                if (err) canvas.parentElement.innerHTML = '<pre style="color:#ccc;font-size:.55rem;line-height:1">' + escHtml(s.rawQrData) + '</pre>';
+            });
+        }
+    });
+}
+
+function renderSession(s) {
+    const icon = {
+        connected:        '🟢',
+        qr_pending:       '📱',
+        reconnecting:     '🔄',
+        logged_out:       '🔴',
+        bad_session:      '🔴',
+        restart_required: '⚠️',
+        disconnected:     '🟠',
+        connecting:       '⏳',
+    }[s.state] || '⚪';
+
+    const label = {
+        connected:        'Connected',
+        qr_pending:       'Scan QR',
+        reconnecting:     `Reconnecting #${s.reconnectAttempts}`,
+        logged_out:       'Logged Out',
+        bad_session:      'Bad Session',
+        restart_required: 'Restart Required',
+        disconnected:     'Disconnected',
+        connecting:       'Connecting…',
+    }[s.state] || s.state;
+
+    const actionCls = ['logged_out','bad_session','restart_required'].includes(s.state) ? 'err'
+        : s.state === 'reconnecting' ? 'warn' : '';
+
+    const qrBlock = s.state === 'qr_pending' && s.rawQrData ? `
+        <div class="qr-section">
+            <canvas id="qr_${safeId(s.sessionName)}"></canvas>
+            <div class="qr-hint">Open WhatsApp → Settings → Linked Devices → Add Device → scan this code</div>
+            <div class="qr-timer">⏱ ${s.qrElapsedMinutes} / ${s.qrMaxMinutes} min</div>
+        </div>` : '';
+
+    const action = s.action ? `<div class="diag-action ${actionCls}">👉 ${escHtml(s.action)}</div>` : '';
+
+    return `<div class="session-card">
+        <div class="session-header">
+            <div class="session-name">${icon} ${escHtml(s.sessionName)}</div>
+            <span class="badge badge-${s.state}">${label}</span>
+        </div>
+        <div class="diag-why">${escHtml(s.why)}</div>
+        ${action}
+        ${qrBlock}
+        <div class="diag-meta">
+            <span>Last active: ${s.lastActivity}</span>
+            ${s.lastDisconnectionTime ? `<span>Disconnected: ${s.lastDisconnectionTime}</span>` : ''}
+            ${s.lastDisconnectReason && s.lastDisconnectReason!=='None' ? `<span>Reason: ${s.lastDisconnectReason}</span>` : ''}
+        </div>
+    </div>`;
+}
+
+// ── System info ───────────────────────────────────────────────────────────────
+async function loadInfo() {
+    try {
+        const r = await fetch(`${BASE}/api/dashboard/info`);
+        if (!r.ok) return;
+        const d = await r.json();
+        document.getElementById('waVersion').textContent = d.waVersion || '—';
+        document.getElementById('envName').textContent = d.environment || '—';
+    } catch (_) {}
+}
+
+// ── Logs ──────────────────────────────────────────────────────────────────────
+async function loadLogs() {
+    try {
+        // Get list of log files and pick the most recent whatsapp log
+        const fr = await fetch(`${BASE}/api/logs/files`);
+        if (!fr.ok) return;
+        const { files } = await fr.json();
+        const logFile = files.find(f => f.name.includes('whatsapp') && !f.name.includes('startup') && !f.name.includes('unix'));
+        if (!logFile) return;
+
+        const params = new URLSearchParams({ fileName: logFile.name, tail: 'true', pageSize: '80' });
+        const cr = await fetch(`${BASE}/api/logs/content?${params}`);
+        if (!cr.ok) return;
+        const { lines } = await cr.json();
+        allLogLines = (lines || []).reverse(); // newest last → newest at bottom
+        renderLogBox();
+    } catch (_) {}
+}
+
+function renderLogBox() {
+    const box = document.getElementById('logBox');
+    let filtered = allLogLines;
+    if (activeFilter) {
+        const f = activeFilter.toUpperCase();
+        if (f === 'ERR') {
+            filtered = allLogLines.filter(l => (l.level||'').includes('ERR') || (l.level||'').includes('FATAL'));
+        } else if (f === 'WRN') {
+            filtered = allLogLines.filter(l => (l.level||'').includes('WRN'));
+        } else {
+            filtered = allLogLines.filter(l =>
+                (l.message||'').toLowerCase().includes(activeFilter.toLowerCase()) ||
+                (l.source||'').toLowerCase().includes(activeFilter.toLowerCase()));
+        }
+    }
+
+    if (!filtered.length) {
+        box.innerHTML = `<div class="ll l-UNKNOWN">No log entries match the current filter.</div>`;
+        return;
+    }
+
+    box.innerHTML = filtered.map(l => {
+        const lvl = (l.level||'UNKNOWN').toUpperCase().substring(0,3);
+        const src = l.source ? `<span style="color:#4ade80">[${escHtml(l.source.split('.').pop())}]</span> ` : '';
+        const ts = l.timestamp ? `<span style="color:#6b7280">${escHtml(l.timestamp)}</span> ` : '';
+        return `<div class="ll l-${lvl}">${ts}[${lvl}] ${src}${escHtml(l.message||l.raw||'')}</div>`;
+    }).join('');
+
+    box.scrollTop = box.scrollHeight;
+}
+
+// Filter buttons
+document.querySelectorAll('.log-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.log-filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeFilter = btn.dataset.f;
+        renderLogBox();
+    });
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function showBanner(text) {
+    document.getElementById('attentionBanner').style.display = 'flex';
+    document.getElementById('attentionText').textContent = text;
+}
+function hideBanner() { document.getElementById('attentionBanner').style.display = 'none'; }
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function safeId(s) { return s.replace(/[^a-zA-Z0-9]/g,'_'); }
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+checkAuth();
+</script>
 </body>
 </html>

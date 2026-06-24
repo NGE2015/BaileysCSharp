@@ -311,6 +311,7 @@ namespace WhatsAppApi.Services
                     }
 
                     _logger.LogInformation($"Generating QR code for session {sessionName} (session time: {qrSessionDuration.TotalMinutes:F1}min/{sessionData.MaxQRSessionDuration.TotalMinutes}min)");
+                    sessionData.RawQrData = connection.QR; // store raw string for visual rendering on dashboard
                     QRCodeGenerator QrGenerator = new QRCodeGenerator();
                     QRCodeData QrCodeInfo = QrGenerator.CreateQrCode(connection.QR, QRCodeGenerator.ECCLevel.L);
                     AsciiQRCode qrCode = new AsciiQRCode(QrCodeInfo);
@@ -1585,9 +1586,10 @@ namespace WhatsAppApi.Services
         public class SessionData
         {
             public WASocket Socket { get; set; }
-            public SocketConfig Config { get; set; } // Added Config property
+            public SocketConfig Config { get; set; }
             public List<WebMessageInfo> Messages { get; set; }
             public string QRCode { get; set; }
+            public string RawQrData { get; set; } // raw WhatsApp QR string for visual rendering
             public bool IsConnected { get; set; }
             public DateTime LastActivity { get; set; } = DateTime.UtcNow;
             public int ReconnectAttempts { get; set; } = 0;

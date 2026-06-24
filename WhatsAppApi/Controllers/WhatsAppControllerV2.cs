@@ -1,6 +1,8 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using BaileysCSharp.Core.Events;
+using Microsoft.AspNetCore.Mvc;
 using System.Threading;
 using System.Threading.Tasks;
+using WhatsAppApi.Helper;
 using WhatsAppApi.Services;
 
 namespace WhatsAppApi.Controllers
@@ -163,6 +165,97 @@ namespace WhatsAppApi.Controllers
         {
             var sessions = _whatsAppService.GetActiveSessions();
             return Ok(new { Sessions = sessions });
+        }
+
+        [HttpGet("allDiagnostics")]
+        public IActionResult GetAllDiagnostics()
+        {
+            var results = new List<object>();
+            foreach (var sessionName in _whatsAppService.GetActiveSessions())
+            {
+                if (_whatsAppService.TryGetSessionData(sessionName, out var sd))
+                    results.Add(BuildDiagnostic(sessionName, sd));
+            }
+            var waVersion = WaBuildHelper.LastResolvedVersion is { } v
+                ? string.Join(".", v)
+                : "unknown";
+            return Ok(new { sessions = results, waVersion });
+        }
+
+        private static object BuildDiagnostic(string sessionName, WhatsAppServiceV2.SessionData sd)
+        {
+            string state, why, action;
+
+            if (sd.IsConnected)
+            {
+                state = "connected";
+                why = "Connected and working normally.";
+                action = "";
+            }
+            else if (!string.IsNullOrEmpty(sd.QRCode))
+            {
+                var elapsed = sd.QRSessionStartTime != DateTime.MinValue
+                    ? (DateTime.UtcNow - sd.QRSessionStartTime).TotalMinutes : 0;
+                state = "qr_pending";
+                why = $"Waiting for QR code scan ({elapsed:F1} min / {sd.MaxQRSessionDuration.TotalMinutes:F0} min max).";
+                action = "Open WhatsApp on your phone → Settings → Linked Devices → Add Device → scan the QR code shown below.";
+            }
+            else if (sd.LastDisconnectReason == DisconnectReason.LoggedOut)
+            {
+                state = "logged_out";
+                why = "The phone explicitly logged out this session. The stored credentials are no longer valid.";
+                action = "Use Logoff to delete the session, then start a new session and scan a fresh QR code.";
+            }
+            else if (sd.LastDisconnectReason == DisconnectReason.BadSession)
+            {
+                state = "bad_session";
+                why = "Session credentials were rejected by WhatsApp as corrupt or invalid.";
+                action = "Delete the session permanently and re-authenticate with a new QR code.";
+            }
+            else if (sd.LastDisconnectReason == DisconnectReason.RestartRequired)
+            {
+                state = "restart_required";
+                why = "WhatsApp signalled that a restart is required (protocol update or app update needed).";
+                action = "Stop and restart the session. If it persists, check if a new WhatsApp Web version is available.";
+            }
+            else if (sd.ReconnectAttempts > 0)
+            {
+                state = "reconnecting";
+                why = $"Disconnected ({sd.LastDisconnectReason}). Auto-reconnection attempt #{sd.ReconnectAttempts} in progress.";
+                action = "Wait for automatic reconnection. If it keeps failing after 5+ attempts, check the logs for the root cause.";
+            }
+            else if (sd.LastDisconnectionTime != DateTime.MinValue)
+            {
+                state = "disconnected";
+                why = $"Disconnected ({sd.LastDisconnectReason}) at {sd.LastDisconnectionTime:HH:mm:ss} UTC. Preparing to reconnect.";
+                action = "Wait for automatic reconnection. If QR code does not appear within 30 s, restart the session.";
+            }
+            else
+            {
+                state = "connecting";
+                why = "Connecting to WhatsApp servers. QR code generation in progress.";
+                action = "Wait up to 30 seconds. If no QR appears, there may be a WhatsApp version mismatch — check the logs.";
+            }
+
+            return new
+            {
+                sessionName,
+                state,
+                isConnected = sd.IsConnected,
+                hasQrCode = !string.IsNullOrEmpty(sd.QRCode),
+                rawQrData = sd.RawQrData,
+                why,
+                action,
+                lastDisconnectReason = sd.LastDisconnectReason.ToString(),
+                lastDisconnectionTime = sd.LastDisconnectionTime == DateTime.MinValue
+                    ? null : (object)sd.LastDisconnectionTime.ToString("yyyy-MM-dd HH:mm:ss") + " UTC",
+                reconnectAttempts = sd.ReconnectAttempts,
+                lastActivity = sd.LastActivity == default ? "Never"
+                    : sd.LastActivity.ToString("yyyy-MM-dd HH:mm:ss") + " UTC",
+                qrElapsedMinutes = sd.QRSessionStartTime != DateTime.MinValue
+                    ? Math.Round((DateTime.UtcNow - sd.QRSessionStartTime).TotalMinutes, 1) : 0,
+                qrMaxMinutes = sd.MaxQRSessionDuration.TotalMinutes
+            };
         }
 
         [HttpPost("logoff")]
