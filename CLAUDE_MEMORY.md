@@ -1,81 +1,60 @@
 # BaileysCSharp WhatsApp API - Setup & Usage Memory
 
 ## Project Overview
-BaileysCSharp is a C# WhatsApp Web API implementation running on Ubuntu in Windows WSL2, configured with nginx reverse proxy for production deployment.
+BaileysCSharp is a C# WhatsApp Web API running as a systemd service on Ubuntu, behind Caddy (production) or Nginx. On Windows it is tested locally using Caddy at `C:\Caddy\WhatsAppApi\`.
 
-## Quick Start Commands
+## Quick Start (Production — Linux systemd)
 
-### 1. Start the WhatsApp API Service
 ```bash
-cd /root/BaileysCSharp
-nohup dotnet run --project WhatsAppApi/WhatsAppApi.csproj > /tmp/whatsapp.log 2>&1 &
+sudo systemctl restart WhatsApp.RubyManager.app.service
+sudo systemctl status WhatsApp.RubyManager.app.service
+journalctl -u WhatsApp.RubyManager.app.service -f
 ```
 
-### 2. Fix Socket Permissions (Required after each start)
-```bash
-chmod 777 /home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/app.sock
-```
+## Quick Start (Local — Windows + Caddy)
 
-### 3. Monitor Service Logs
-```bash
-tail -f /tmp/whatsapp.log
-```
-
-### 4. Stop Service
-```bash
-pkill -f "dotnet.*WhatsAppApi"
+```powershell
+C:\Caddy\WhatsAppApi\START_ALL.ps1
+# App: localhost:5284  |  Caddy proxy: localhost:5285
 ```
 
 ## Network Configuration
 
-### Nginx Configuration
-- **File**: `/etc/nginx/sites-available/developmentschool`
-- **Access URL**: `http://localhost/whatsapp/*`
-- **Backend**: Unix socket at `/home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/app.sock`
+### Production (Caddy on Ubuntu)
+- **Socket**: `/home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/app.sock`
+- **Public URL**: `https://whatsapp.rubymanager.app`
 
-### Nginx Reload
-```bash
-nginx -t && systemctl reload nginx
-```
+### Local Windows (Caddy)
+- **Socket**: `C:\temp\whatsapp-api.sock` (or the Linux-path equivalent)
+- **App port**: `localhost:5284`
+- **Proxy port**: `localhost:5285`
+- **Caddyfile**: `C:\Caddy\WhatsAppApi\Caddyfile`
 
 ## API Endpoints (WhatsAppControllerV2)
 
-**Base URL**: `http://localhost/whatsapp/v2/WhatsAppControllerV2`
+**Base URL (local)**: `http://localhost:5285/v2/WhatsAppControllerV2`
+**Base URL (prod)**: `https://whatsapp.rubymanager.app/v2/WhatsAppControllerV2`
+
+> **IMPORTANT**: The route is `/v2/WhatsAppControllerV2/` NOT `/v2/WhatsApp/`.
+> ASP.NET Core's `[controller]` token only strips "Controller" when it is the
+> last word in the class name — `WhatsAppControllerV2` ends in "V2".
 
 ### Session Management
 ```bash
-# Start a new session (generates QR code if not authenticated)
-POST /startSession
-{
-  "SessionName": "your_session_name"
-}
-
-# Stop a session
-POST /stopSession
-{
-  "SessionName": "your_session_name"
-}
-
-# Get all active sessions
-GET /activeSessions
-# Returns: {"sessions":["session1","session2"]}
-
-# Check connection status
-GET /connectionStatus?sessionName=your_session_name
-# Returns: {"IsConnected": true/false}
+POST /startSession       { "SessionName": "..." }
+POST /stopSession        { "SessionName": "..." }
+GET  /activeSessions
+GET  /connectionStatus?sessionName=...
+GET  /allDiagnostics     # ← primary diagnostic endpoint (see Dashboard section)
 ```
 
 ### QR Code Management
 ```bash
-# Get ASCII QR code for authentication
-GET /getAsciiQRCode?sessionName=your_session_name
-
-# Force regenerate QR code
-POST /forceRegenerateQRCode
-{
-  "SessionName": "your_session_name"
-}
+GET  /getAsciiQRCode?sessionName=...&timeout=10
+POST /forceRegenerateQRCode   { "SessionName": "..." }
 ```
+
+> For visual QR codes, open `/status.html` in the browser — it uses `qrcode.js` to render scannable QR images directly on screen.
 
 ### Messaging
 ```bash
@@ -193,47 +172,60 @@ curl -X POST "http://localhost/whatsapp/v2/WhatsAppControllerV2/sendMessage" \
 - Rate limiting implemented ✅
 - Comprehensive logging ✅
 
-## Troubleshooting
+## Dashboard Pages (June 2026)
 
-### Common Issues
-1. **502 Bad Gateway**: Socket permissions issue → run `chmod 777 app.sock`
-2. **404 Not Found**: Wrong controller route → use `WhatsAppControllerV2` 
-3. **No QR Code**: Session might be starting → check logs for QR generation
-4. **Session Not Restoring**: Missing credentials file → complete authentication first
+Password-protected pages at `/status.html` and `/logs.html`.
 
-### Log Analysis
-```bash
-# Service startup logs
-tail -20 /tmp/whatsapp.log
+- **Login**: POST `/api/dashboard/login` with `{ "password": "..." }` → sets HttpOnly `dash_tok` cookie
+- **Password** (in `appsettings.json`): `"Dashboard": { "Password": "RubyManager2026!" }`
+- **Production URLs**: `https://whatsapp.rubymanager.app/status.html` and `.../logs.html`
 
-# Session restoration logs
-grep "RestoreExistingSessionsAsync\|Session.*restore" /tmp/whatsapp.log
+### status.html capabilities
+- Traffic-light badge per session: connected / qr_pending / logged_out / reconnecting / error
+- Human-readable why + action for each state
+- Visual QR rendered in-browser (qrcode.js CDN) — just open the page and scan
+- Live log tail, filterable by QR / Error / Warning / Session / Connection
+- Adaptive auto-refresh (5 s when QR pending, 15 s otherwise)
 
-# Connection status logs  
-grep "ConnectionState\|WAConnectionState" /tmp/whatsapp.log
-```
-
-### Health Checks
-```bash
-# Check if service is running
-ps aux | grep dotnet
-
-# Check socket file exists
-ls -la /home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/app.sock
-
-# Test basic connectivity
-curl "http://localhost/whatsapp/v2/WhatsAppControllerV2/activeSessions"
-```
-
-## Development Notes
-
-- **Controller**: Use `WhatsAppControllerV2` (not `WhatsAppController`)
-- **Route Pattern**: `/v2/WhatsAppControllerV2/{action}`
-- **Session Management**: Automatic restoration implemented
-- **Configuration**: Unix socket configuration in `appsettings.json`
-- **Nginx**: Strips `/whatsapp` prefix before forwarding to backend
+### allDiagnostics endpoint
+`GET /v2/WhatsAppControllerV2/allDiagnostics` — the single source of truth for session health.
+Returns `state`, `why`, `action`, `rawQrData`, `waVersion`, timestamps per session.
 
 ---
 
-**Last Updated**: July 2025  
-**Status**: Production Ready with Automatic Session Persistence ✅
+## Troubleshooting
+
+### Session stuck — not connecting, not showing QR
+Happens when `_creds.json` exists but WhatsApp remotely logged out the session (reason 401).
+
+```bash
+rm -rf /home/RubyManager/web/whatsapp.rubymanager.app/sessions/<tenantId>
+sudo systemctl restart WhatsApp.RubyManager.app.service
+# Then trigger /startSession from CRM settings
+```
+
+### QR never appeared (historical bug — fixed June 2026)
+`WaBuildHelper` regex included `-alpha` in the numeric capture group, causing `uint.Parse` to
+always throw and fall back to an outdated WA Web version. Fixed in `feature/dashboard-v2`.
+
+### Common issues
+| Symptom | Fix |
+|---|---|
+| 502 Bad Gateway | `chmod 777 app.sock` |
+| 404 on API calls | Route is `/v2/WhatsAppControllerV2/` not `/v2/WhatsApp/` |
+| No QR on status page | Check `waVersion` in `/allDiagnostics`; stale version = silent WA rejection |
+| Dashboard 401 | Re-login at `/status.html` |
+
+### Log locations (production)
+```bash
+# Rolling file log
+/home/RubyManager/web/whatsapp.rubymanager.app/netcoreapp/logs/whatsapp-YYYYMMDD.log
+
+# Systemd journal
+journalctl -u WhatsApp.RubyManager.app.service -f
+```
+
+---
+
+**Last Updated**: June 2026  
+**Status**: Production Ready — dashboard v2 with visual QR + diagnostics deployed ✅

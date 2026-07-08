@@ -160,38 +160,44 @@ namespace BaileysCSharp.Core
             while (!keepAliveToken.IsCancellationRequested)
             {
                 var diff = DateTime.Now - lastReceived;
-                /*
-                    check if it's been a suspicious amount of time since the server responded with our last seen
-                    it could be that the network is down
-                */
                 if (diff.TotalMilliseconds > keepAliveIntervalMs + 5000)
                 {
-                    End("Connection was lost", DisconnectReason.ConnectionLost);
-                    continue;
+                    End(new Boom("Connection was lost", new BoomData(DisconnectReason.ConnectionLost)));
+                    return;
                 }
 
                 try
                 {
-                    // if its all good, send a keep alive request
+                    // Ping with a hard 20-second timeout. Without this, Query() hangs forever
+                    // when WhatsApp silently drops the TCP connection (no WS close frame),
+                    // causing the keepalive thread to freeze and the session to become a zombie.
+                    using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(keepAliveToken.Token);
+                    pingCts.CancelAfter(TimeSpan.FromSeconds(20));
+
                     var result = await Query(new BinaryNode("iq")
                     {
                         attrs = new Dictionary<string, string>()
-                    {
-                        {"id", GenerateMessageTag() },
-                        {"to",S_WHATSAPP_NET },
-                        {"type","get" },
-                        {"xmlns" ,"w:p" }
-                    },
+                        {
+                            {"id", GenerateMessageTag() },
+                            {"to", S_WHATSAPP_NET },
+                            {"type", "get" },
+                            {"xmlns", "w:p" }
+                        },
                         content = new BinaryNode[]
                         {
-                        new BinaryNode()
-                        {
-                            tag = "ping"
+                            new BinaryNode() { tag = "ping" }
                         }
-                        }
-                    });
+                    }).WaitAsync(pingCts.Token);
+
                     lastReceived = DateTime.Now;
                     Thread.Sleep(keepAliveIntervalMs);
+                }
+                catch (OperationCanceledException) when (!keepAliveToken.IsCancellationRequested)
+                {
+                    // Ping timed out — the connection is silently dead
+                    Logger.Error(new { }, "keep alive ping timed out — connection is dead, triggering reconnect");
+                    End(new Boom("Ping timed out", new BoomData(DisconnectReason.ConnectionLost)));
+                    return;
                 }
                 catch (Exception ex)
                 {
@@ -711,17 +717,11 @@ namespace BaileysCSharp.Core
         }
         
 
-        // الداله الاصلية
         private void End(string reason, DisconnectReason connectionLost)
         {
-
-            Logger.Trace(new { reason = connectionLost }, reason);
-
-            keepAliveToken?.Cancel();
-            qrTimerToken?.Cancel();
-
-
-            Console.WriteLine($"{reason} - {connectionLost}");
+            // Route through End(Boom) so the Close event is always emitted and
+            // reconnection logic in WhatsAppServiceV2 is always triggered.
+            End(new Boom(reason, new BoomData(connectionLost)));
         }
 
 

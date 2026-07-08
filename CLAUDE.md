@@ -125,6 +125,97 @@ For complete implementation details, deployment instructions, and troubleshootin
 - See `DEPLOYMENT-INSTRUCTIONS.md` for deployment steps
 - See `UNIX-SOCKET-DEPLOYMENT.md` for production configuration
 
+## Critical QR Generation Fix (June 2026)
+
+**Merged in `feature/dashboard-v2`** — QR codes were silently failing to generate in production.
+
+### Root cause
+`WaBuildHelper.cs` regex was `>([0-9]+\.[0-9]+\.[0-9]+-alpha)<`, which included `-alpha` inside
+the capture group. `uint.Parse("1031772734-alpha")` always threw, so the scraper always fell back
+to a hardcoded version from January 2026. WhatsApp Web silently rejects old versions — no QR.
+
+### Fix
+- Regex changed to `>([0-9]+\.[0-9]+\.[0-9]+)-alpha<` (numeric part only)
+- `uint.Parse` replaced with `uint.TryParse` for safety
+- Fallback updated: `{ 2, 3000, 1042026337 }` (June 2026 alpha build)
+- `WaBuildHelper.LastResolvedVersion` added — updated on each successful fetch, exposed via dashboard
+
+### Files changed
+- `WhatsAppApi/Helper/WaBuildHelper.cs`
+- `WhatsAppApi/Services/WhatsAppServiceV2.cs` — `SessionData.RawQrData` property added
+- `WhatsAppApi/Controllers/WhatsAppControllerV2.cs` — `allDiagnostics` endpoint added
+
+---
+
+## Dashboard v2 (June 2026)
+
+Password-protected HTML dashboards at `/status.html` and `/logs.html`.
+
+### Auth
+- `DashboardController.cs` — POST `/api/dashboard/login` validates password, sets `dash_tok` HttpOnly cookie (30-day MaxAge)
+- `DashboardAuthMiddleware.cs` — protects path prefix `/api/logs`
+- Salt: `_ruby_dash_2026`, hashed with SHA256
+- Password configured in `appsettings.json` → `"Dashboard": { "Password": "..." }`
+- Middleware registered in `Program.cs` after `UseStaticFiles()` and before `RateLimitingMiddleware`
+
+### allDiagnostics endpoint
+`GET /v2/WhatsAppControllerV2/allDiagnostics` — returns every session enriched with:
+- `state` — one of: `connected`, `qr_pending`, `logged_out`, `bad_session`, `restart_required`, `reconnecting`, `disconnected`, `connecting`
+- `why` — human-readable explanation of the current state
+- `action` — what the operator should do
+- `rawQrData` — raw WhatsApp QR string (non-null only when `qr_pending`), used by `qrcode.js` in browser
+- `waVersion` — what version was actually negotiated with WhatsApp (from `WaBuildHelper.LastResolvedVersion`)
+
+### Route naming gotcha
+ASP.NET Core's `[controller]` token strips "Controller" **only** when it is the last word in the
+class name. `WhatsAppControllerV2` ends in "V2" so the full name is used:
+- Correct: `/v2/WhatsAppControllerV2/startSession`
+- Wrong:   `/v2/WhatsApp/startSession` (404)
+
+---
+
+## Local Windows Development with Caddy
+
+### Setup (one-time)
+Scripts live at `C:\Caddy\WhatsAppApi\` (not in git — Windows-only). The app runs as
+`ASPNETCORE_ENVIRONMENT=Development` which loads `appsettings.Development.json`:
+- `ListenLocalhost: true`, `LocalhostPort: 5284`
+
+If you need `WindowsDev` overrides (separate socket path), use `appsettings.WindowsDev.json`.
+
+### Start
+```powershell
+C:\Caddy\WhatsAppApi\START_ALL.ps1          # opens two terminals: app + Caddy
+# App: localhost:5284   Caddy proxy: localhost:5285
+```
+
+### Test
+```powershell
+# Start a session
+curl -X POST http://localhost:5285/v2/WhatsAppControllerV2/startSession -H "Content-Type: application/json" -d '{"SessionName":"test"}'
+
+# Check diagnostics (includes QR data)
+curl http://localhost:5285/v2/WhatsAppControllerV2/allDiagnostics
+```
+
+### Windows Unix socket behavior
+The socket path `/home/RubyManager/.../app.sock` resolves to `C:\home\...` on Windows.
+`Directory.CreateDirectory` succeeds silently — no action needed. AF_UNIX is available on
+Windows 10 build 17063+ (April 2018 Update and later).
+
+---
+
+## CI/CD Branch Triggers
+
+`main.yml` triggers CI/CD on pushes to:
+- `main`
+- `feature/dashboard-v2` (added June 2026 — remove once fully merged)
+
+The workflow reads `publish.Env` from `appsettings.json` (`"dev"` or `"prod"`) to select the
+SSH deployment target. **Never leave `"Env": "dev"` in `appsettings.json` before merging to main.**
+
+---
+
 ## Deployment
 
 The project includes GitHub Actions CI/CD pipeline that:
