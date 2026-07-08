@@ -9,6 +9,7 @@ on:
       - feature/whatsapp-enhanced-reconnection
       - feature/bot-whatsapp-response
       - feature/dashboard-v2
+      - feature/lid-normalization-bot-webhook
 
 jobs:
   build:
