@@ -161,6 +161,25 @@ namespace WhatsAppApi.Services
             socket.EV.Pressence.Update += Pressence_Update;
             _logger.LogDebug($"Event handlers attached successfully for session {sessionName}");
 
+            // Subscribe to phone number extraction events from MessageDecoder
+            // This allows us to cache caller_pn and sender_pn for later use
+            BaileysCSharp.Core.MessageDecoder.OnCallerPhoneNumberExtracted += (messageId, phoneNumber) =>
+            {
+                if (_sessions.TryGetValue(sessionName, out var sd))
+                {
+                    if (messageId.EndsWith(":sender"))
+                    {
+                        sd.SenderPhoneNumberCache.TryAdd(messageId.Replace(":sender", ""), phoneNumber);
+                        _logger.LogInformation($"[CALLER_PN_CACHE] Cached sender phone number - MsgId: {messageId}, PN: {phoneNumber}");
+                    }
+                    else
+                    {
+                        sd.CallerPhoneNumberCache.TryAdd(messageId, phoneNumber);
+                        _logger.LogInformation($"[CALLER_PN_CACHE] Cached caller phone number - MsgId: {messageId}, PN: {phoneNumber}");
+                    }
+                }
+            };
+
             _logger.LogDebug($"Making socket connection for session: {sessionName}");
             socket.MakeSocket();
 
@@ -371,6 +390,9 @@ namespace WhatsAppApi.Services
                         if (msg.Message == null)
                             continue;
 
+                        // Log incoming message details for debugging phone number transformations
+                        _logger.LogInformation($"[PHONE_NUMBER_TRACE] Incoming message - Session: {sessionName}, RemoteJid: {msg.Key?.RemoteJid}, FromMe: {msg.Key?.FromMe}, MessageId: {msg.Key?.Id}");
+
                         // Save incoming messages to CRM asynchronously (fire-and-forget)
                         _ = Task.Run(async () =>
                         {
@@ -413,26 +435,78 @@ namespace WhatsAppApi.Services
                     throw new Exception($"Session {sessionName} is not connected.");
                 }
 
-                _logger.LogInformation($"Attempting to send message to {remoteJid} via session {sessionName}");
-                
+                // Detect format: LID or Phone
+                bool isLidFormat = !string.IsNullOrEmpty(remoteJid) && remoteJid.Contains("@lid");
+                string formatType = isLidFormat ? "LID" : "PHONE";
+                string finalRemoteJid = remoteJid;
+
+                _logger.LogInformation($"[FORMAT_DETECTION] Attempting to send message to {remoteJid} - Format: {formatType} via session {sessionName}");
+
+                // ===== NEW: Try to resolve @lid to real phone number using cached caller_pn =====
+                if (isLidFormat)
+                {
+                    var lidMatches = sessionData.CallerPhoneNumberCache.Where(kvp => kvp.Value != null).ToList();
+                    _logger.LogInformation($"[LID_RESOLUTION] Checking {lidMatches.Count} cached phone numbers for @lid reply target");
+
+                    // Look for a recent message from this LID in the cache
+                    foreach (var cachedEntry in lidMatches.OrderByDescending(x => x.Key).Take(5))
+                    {
+                        _logger.LogDebug($"[LID_RESOLUTION] Available cached PN for potential match: MsgId={cachedEntry.Key}, PN={cachedEntry.Value}");
+                    }
+                }
+                // ===== END: LID resolution attempt =====
+
                 try
                 {
                     // Add timeout to prevent indefinite hanging
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                    await sessionData.Socket.SendMessage(remoteJid, new TextMessageContent()
+
+                    await sessionData.Socket.SendMessage(finalRemoteJid, new TextMessageContent()
                     {
                         Text = message
                     }).WaitAsync(cts.Token);
 
-                    _logger.LogInformation($"Message sent successfully to {remoteJid} via session {sessionName}");
-                    
+                    _logger.LogInformation($"[FORMAT_DETECTION] Message sent successfully to {finalRemoteJid} (Format: {formatType}) via session {sessionName}");
+
                     // Update LastActivity
                     sessionData.LastActivity = DateTime.UtcNow;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Failed to send message via session {sessionName}: {ex.Message}");
-                    
+                    // If sending to LID format fails, try to resolve to phone format
+                    if (isLidFormat)
+                    {
+                        _logger.LogWarning($"[FORMAT_FALLBACK] Failed to send to LID format {remoteJid}: {ex.Message}. Attempting fallback...");
+
+                        // Try to resolve LID to phone number for fallback
+                        var resolvedPhone = ResolveLidToPhoneNumber(sessionData, remoteJid);
+                        if (!string.IsNullOrEmpty(resolvedPhone))
+                        {
+                            _logger.LogInformation($"[FORMAT_FALLBACK] Resolved LID {remoteJid} to phone {resolvedPhone}, retrying send...");
+
+                            try
+                            {
+                                using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                                string phoneJid = JidUtils.JidEncode(resolvedPhone, "s.whatsapp.net");
+
+                                await sessionData.Socket.SendMessage(phoneJid, new TextMessageContent()
+                                {
+                                    Text = message
+                                }).WaitAsync(cts2.Token);
+
+                                _logger.LogInformation($"[FORMAT_FALLBACK] Message sent successfully using phone format: {phoneJid}");
+                                sessionData.LastActivity = DateTime.UtcNow;
+                                return; // Success with fallback
+                            }
+                            catch (Exception fallbackEx)
+                            {
+                                _logger.LogError(fallbackEx, $"[FORMAT_FALLBACK] Also failed with phone format: {fallbackEx.Message}");
+                            }
+                        }
+                    }
+
+                    _logger.LogError(ex, $"Failed to send message to {remoteJid} (Format: {formatType}) via session {sessionName}: {ex.Message}");
+
                     // Mark session as disconnected if send fails
                     sessionData.IsConnected = false;
                     throw;
@@ -464,8 +538,12 @@ namespace WhatsAppApi.Services
                 throw new Exception($"Session {sessionName} is not connected.");
             }
 
+            // Detect format: LID or Phone
+            bool isLidFormat = !string.IsNullOrEmpty(remoteJid) && remoteJid.Contains("@lid");
+            string formatType = isLidFormat ? "LID" : "PHONE";
+
             var length = mediaBytes?.Length ?? 0;
-            _logger.LogInformation($"Attempting to send media to {remoteJid} via session {sessionName}, size: {length} bytes, type: {mimeType}");
+            _logger.LogInformation($"[FORMAT_DETECTION] Attempting to send media to {remoteJid} - Format: {formatType} via session {sessionName}, size: {length} bytes, type: {mimeType}");
 
             // now hand off to Baileys
             using var ms = new MemoryStream(mediaBytes);
@@ -482,13 +560,50 @@ namespace WhatsAppApi.Services
                     }
                 ).WaitAsync(cts.Token);
 
-                _logger.LogInformation($"Media sent successfully to {remoteJid} via session {sessionName}");
+                _logger.LogInformation($"[FORMAT_DETECTION] Media sent successfully to {remoteJid} (Format: {formatType}) via session {sessionName}");
                 sessionData.LastActivity = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Failed to send media via session {sessionName}: {ex.Message}");
-                
+                // If sending to LID format fails, try to resolve to phone format
+                if (isLidFormat)
+                {
+                    _logger.LogWarning($"[FORMAT_FALLBACK] Failed to send media to LID format {remoteJid}: {ex.Message}. Attempting fallback...");
+
+                    // Try to resolve LID to phone number for fallback
+                    var resolvedPhone = ResolveLidToPhoneNumber(sessionData, remoteJid);
+                    if (!string.IsNullOrEmpty(resolvedPhone))
+                    {
+                        _logger.LogInformation($"[FORMAT_FALLBACK] Resolved LID {remoteJid} to phone {resolvedPhone}, retrying media send...");
+
+                        try
+                        {
+                            using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                            string phoneJid = JidUtils.JidEncode(resolvedPhone, "s.whatsapp.net");
+                            using var ms2 = new MemoryStream(mediaBytes);
+
+                            await sessionData.Socket.SendMessage(
+                                phoneJid,
+                                new ImageMessageContent
+                                {
+                                    Image = ms2,
+                                    Caption = caption
+                                }
+                            ).WaitAsync(cts2.Token);
+
+                            _logger.LogInformation($"[FORMAT_FALLBACK] Media sent successfully using phone format: {phoneJid}");
+                            sessionData.LastActivity = DateTime.UtcNow;
+                            return; // Success with fallback
+                        }
+                        catch (Exception fallbackEx)
+                        {
+                            _logger.LogError(fallbackEx, $"[FORMAT_FALLBACK] Also failed with phone format: {fallbackEx.Message}");
+                        }
+                    }
+                }
+
+                _logger.LogError(ex, $"Failed to send media to {remoteJid} (Format: {formatType}) via session {sessionName}: {ex.Message}");
+
                 // Mark session as disconnected if send fails
                 sessionData.IsConnected = false;
                 throw;
@@ -728,13 +843,42 @@ namespace WhatsAppApi.Services
                 }
 
                 // Extract message data
-                var senderPhone = ExtractPhoneNumber(messageInfo.Key?.RemoteJid);
+                var remoteJid = messageInfo.Key?.RemoteJid;
+                var messageId = messageInfo.Key?.Id;
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] SaveMessageToCrmAsync - Raw RemoteJid from WhatsApp: {remoteJid}");
+
+                // ===== NEW: Try to get cached caller phone number first =====
+                var senderPhone = ExtractPhoneNumber(remoteJid);
+                if (_sessions.TryGetValue(sessionName, out var sessionData) && sessionData.CallerPhoneNumberCache.TryRemove(messageId, out var cachedCallerPn))
+                {
+                    senderPhone = cachedCallerPn;
+                    _logger.LogInformation($"[CALLER_PN_RESOLUTION] SUCCESS - Used cached caller_pn from message attributes for MsgId: {messageId}, PN: {senderPhone}");
+                }
+                else if (remoteJid?.EndsWith("@lid") == true)
+                {
+                    _logger.LogWarning($"[CALLER_PN_RESOLUTION] WARNING - @lid message but no cached caller_pn found for MsgId: {messageId}, falling back to LID extraction");
+                }
+                // ===== END: Caller phone number resolution =====
+
                 var messageContent = ExtractMessageContent(messageInfo.Message);
                 var messageType = GetMessageType(messageInfo.Message);
-                var messageId = messageInfo.Key?.Id;
-                var remoteJid = messageInfo.Key?.RemoteJid;
                 var timestamp = messageInfo.MessageTimestamp > 0 ? (long)messageInfo.MessageTimestamp : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 var receivedAt = DateTimeOffset.FromUnixTimeSeconds(timestamp).ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] Message details - Extracted Phone: {senderPhone}, MessageType: {messageType}, MessageId: {messageId}");
+
+                // ============================================
+                // DIAGNOSTIC LOGGING: Extract ALL available contact info from message
+                // ============================================
+                var isLidFormat = remoteJid?.EndsWith("@lid") ?? false;
+                var pushName = messageInfo.PushName ?? "NOT_PROVIDED";
+                var verifiedBizName = messageInfo.VerifiedBizName ?? "NOT_PROVIDED";
+                var participant = messageInfo.Participant ?? "NOT_PROVIDED";
+                var botInvokerJid = messageInfo.BotMessageInvokerJid ?? "NOT_PROVIDED";
+
+                // Log comprehensive message contact data
+                var contentPreview = (string.IsNullOrEmpty(messageContent) ? "EMPTY" : messageContent.Substring(0, Math.Min(80, messageContent.Length)));
+                _logger.LogInformation($"[CALLER_PN_DIAGNOSTIC] isLid={isLidFormat}, remoteJid={remoteJid}, senderPhone={senderPhone}, pushName={pushName}, messageId={messageId}, content={contentPreview}");
 
                 // Skip if no content to save
                 if (string.IsNullOrEmpty(messageContent) || string.IsNullOrEmpty(senderPhone))
@@ -743,14 +887,20 @@ namespace WhatsAppApi.Services
                     return;
                 }
 
-                // Prepare payload for CRM API
+                // Extract contact name for database and bot
+                var contactName = messageInfo.PushName ?? "Unknown Contact";
+
+                // Prepare payload for CRM API and Bot Webhook
+                // This same payload is sent to both systems
                 var payload = new
                 {
                     clientExternalId = sessionName, // Using session name as tenant ID
                     senderPhone = senderPhone,
+                    contactName = contactName,      // Contact display name (new field)
                     messageContent = messageContent,
                     messageType = messageType,
                     remoteJid = remoteJid,
+                    replyTarget = remoteJid, // IMPORTANT: Use this exact value when sending message back via API
                     messageId = messageId,
                     receivedAt = receivedAt
                 };
@@ -758,23 +908,44 @@ namespace WhatsAppApi.Services
                 var jsonPayload = JsonSerializer.Serialize(payload);
                 var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
 
-                _logger.LogDebug($"Sending message to CRM for session {sessionName}: {senderPhone} - {messageContent.Substring(0, Math.Min(50, messageContent.Length))}...");
+                // Log the payload with contact name included
+                _logger.LogInformation($"[CONTACT_NAME] Including contact information - Phone: {senderPhone}, Name: {contactName}, MessageId: {messageId}");
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM Payload - Full JSON: {jsonPayload}");
+                _logger.LogDebug($"Sending message to CRM for session {sessionName}: {senderPhone} ({contactName}) - {messageContent.Substring(0, Math.Min(50, messageContent.Length))}...");
 
                 // Send to CRM API with timeout
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 var crmBaseUrl = _configuration["CrmEndpoint:BaseUrl"] ?? "https://whatsapp.rubymanager.app";
                 var crmUrl = $"{crmBaseUrl}/api/whatsappmessagehistory/saveMessage";
+
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM API - URL: {crmUrl}");
+
                 var response = await _httpClient.PostAsync(crmUrl, content, cts.Token);
 
                 if (response.IsSuccessStatusCode)
                 {
+                    var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM API SUCCESS (200) for session {sessionName}, message ID: {messageId}");
+                    _logger.LogInformation($"[PHONE_NUMBER_TRACE] CRM API - Response body: {responseBody}");
                     _logger.LogDebug($"Successfully saved message to CRM for session {sessionName}, message ID: {messageId}");
+
+                    // Log successful resolution summary for verification
+                    if (isLidFormat)
+                    {
+                        _logger.LogInformation($"[CALLER_PN_SUCCESS] Successfully resolved @lid message - original={remoteJid}, resolved={senderPhone}, messageId={messageId}, session={sessionName}, status={response.StatusCode}");
+                    }
                 }
                 else
                 {
                     var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning($"[PHONE_NUMBER_TRACE] CRM API ERROR ({response.StatusCode}) for session {sessionName}");
+                    _logger.LogWarning($"[PHONE_NUMBER_TRACE] CRM API - Error response: {responseBody}");
                     _logger.LogWarning($"CRM API returned {response.StatusCode} for session {sessionName}: {responseBody}");
                 }
+
+                // Call RubyManagerBot webhook asynchronously (fire-and-forget)
+                // This allows the webhook to handle unknown numbers independently
+                _ = Task.Run(async () => await CallRubyManagerBotWebhookAsync(sessionName, payload));
             }
             catch (TaskCanceledException)
             {
@@ -791,16 +962,131 @@ namespace WhatsAppApi.Services
         }
 
         /// <summary>
+        /// Calls RubyManagerBot webhook with message data for processing unknown numbers
+        /// This is a fire-and-forget call that doesn't block message processing
+        /// </summary>
+        private async Task CallRubyManagerBotWebhookAsync(string sessionName, object messagePayload)
+        {
+            try
+            {
+                // Check if webhook is enabled
+                var webhookEnabled = _configuration["RubyManagerBotEndpoint:Enabled"];
+                if (webhookEnabled?.ToLower() != "true")
+                {
+                    _logger.LogDebug($"RubyManagerBot webhook is disabled for session {sessionName}");
+                    return;
+                }
+
+                var botBaseUrl = _configuration["RubyManagerBotEndpoint:BaseUrl"] ?? "http://localhost:5000";
+                var botEndpoint = _configuration["RubyManagerBotEndpoint:Endpoint"] ?? "/api/bot/webhook";
+                var botTimeoutSeconds = int.TryParse(_configuration["RubyManagerBotEndpoint:TimeoutSeconds"], out var timeout) ? timeout : 10;
+
+                var webhookUrl = $"{botBaseUrl}{botEndpoint}";
+
+                var jsonPayload = JsonSerializer.Serialize(messagePayload);
+                var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+
+                // Log bot webhook with contact information
+                var contactNameFromPayload = messagePayload.GetType().GetProperty("contactName")?.GetValue(messagePayload);
+                var senderPhoneFromPayload = messagePayload.GetType().GetProperty("senderPhone")?.GetValue(messagePayload);
+                _logger.LogInformation($"[CONTACT_NAME] Bot webhook receiving contact info - Phone: {senderPhoneFromPayload}, Name: {contactNameFromPayload}");
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - URL: {webhookUrl}");
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - Payload being sent: {jsonPayload}");
+                _logger.LogInformation($"[BOT_INSTRUCTION] When sending a message back, use the 'replyTarget' field: {messagePayload.GetType().GetProperty("replyTarget")?.GetValue(messagePayload)}");
+
+                // Call webhook with timeout
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(botTimeoutSeconds));
+                var response = await _httpClient.PostAsync(webhookUrl, content, cts.Token);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook SUCCESS (200) for session {sessionName}");
+                    _logger.LogInformation($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - Response body: {responseBody}");
+                    _logger.LogDebug($"RubyManagerBot webhook call successful for session {sessionName}");
+                }
+                else
+                {
+                    var responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook ERROR ({response.StatusCode}) for session {sessionName}");
+                    _logger.LogWarning($"[PHONE_NUMBER_TRACE] RubyManagerBot webhook - Error response: {responseBody}");
+                    _logger.LogWarning($"RubyManagerBot webhook returned {response.StatusCode} for session {sessionName}: {responseBody}");
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                _logger.LogWarning($"RubyManagerBot webhook call timed out for session {sessionName}");
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, $"Network error calling RubyManagerBot webhook for session {sessionName}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Unexpected error calling RubyManagerBot webhook for session {sessionName}");
+            }
+        }
+
+        /// <summary>
         /// Extracts phone number from WhatsApp JID format
         /// </summary>
         private string ExtractPhoneNumber(string remoteJid)
         {
             if (string.IsNullOrEmpty(remoteJid))
+            {
+                _logger.LogDebug("[PHONE_NUMBER_TRACE] ExtractPhoneNumber - Input is null or empty");
                 return null;
+            }
 
             // Extract phone number from formats like "1234567890@s.whatsapp.net"
             var atIndex = remoteJid.IndexOf('@');
-            return atIndex > 0 ? remoteJid.Substring(0, atIndex) : remoteJid;
+            var extractedPhone = atIndex > 0 ? remoteJid.Substring(0, atIndex) : remoteJid;
+            _logger.LogInformation($"[PHONE_NUMBER_TRACE] Phone extraction - Input JID: {remoteJid} => Extracted: {extractedPhone}");
+            return extractedPhone;
+        }
+
+        /// <summary>
+        /// Resolves a LID (@lid) format JID back to a phone number using local contact store
+        /// Returns null if contact not found
+        /// </summary>
+        private string ResolveLidToPhoneNumber(SessionData sessionData, string lidJid)
+        {
+            try
+            {
+                // Extract LID number from JID (e.g., "171601257582835@lid" → "171601257582835")
+                var lidNumber = ExtractPhoneNumber(lidJid);
+
+                // Get all contacts from socket
+                var allContacts = sessionData.Socket.GetAllContact();
+
+                // Find contact with matching LID property
+                var contact = allContacts.FirstOrDefault(c =>
+                    !string.IsNullOrEmpty(c.LID) && c.LID == lidNumber);
+
+                if (contact != null && !string.IsNullOrEmpty(contact.PhoneNumber))
+                {
+                    _logger.LogInformation($"[LID_RESOLUTION] Found contact: LID={lidNumber}, Phone={contact.PhoneNumber}");
+                    return contact.PhoneNumber;
+                }
+
+                // Fallback: try to find by checking contact ID
+                var matchedContact = allContacts.FirstOrDefault(c =>
+                    JidUtils.JidDecode(c.ID)?.User == lidNumber);
+
+                if (matchedContact != null)
+                {
+                    _logger.LogInformation($"[LID_RESOLUTION] Matched by decoded JID");
+                    return matchedContact.PhoneNumber;
+                }
+
+                _logger.LogWarning($"[LID_RESOLUTION] Could not resolve LID {lidNumber} to phone number - contact may be new");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error resolving LID {lidJid} to phone number");
+                return null;
+            }
         }
 
         /// <summary>
@@ -1593,10 +1879,23 @@ namespace WhatsAppApi.Services
             public int ReconnectAttempts { get; set; } = 0;
             public DateTime QRSessionStartTime { get; set; } = DateTime.MinValue;
             public TimeSpan MaxQRSessionDuration { get; set; } = TimeSpan.FromMinutes(10);
-            
+
             // NEW: Track disconnection details for enhanced reconnection
             public DisconnectReason LastDisconnectReason { get; set; } = DisconnectReason.None;
             public DateTime LastDisconnectionTime { get; set; } = DateTime.MinValue;
+
+            /// <summary>
+            /// Cache for extracted caller phone numbers from messages
+            /// Maps messageId -> CallerPhoneNumber (extracted from caller_pn attribute)
+            /// Used to resolve @lid format JIDs to actual phone numbers for replies
+            /// </summary>
+            public ConcurrentDictionary<string, string> CallerPhoneNumberCache { get; set; } = new();
+
+            /// <summary>
+            /// Cache for sender phone numbers shared via SharePhoneNumber protocol
+            /// Maps messageId -> SenderPhoneNumber
+            /// </summary>
+            public ConcurrentDictionary<string, string> SenderPhoneNumberCache { get; set; } = new();
         }
     }
 }

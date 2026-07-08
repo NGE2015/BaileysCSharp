@@ -23,6 +23,17 @@ namespace BaileysCSharp.Core.Signal
         public string Sender { get; set; }
         public SignalRepository Repository { get; }
 
+        /// <summary>
+        /// Real phone number extracted from caller_pn or sender_pn attributes
+        /// When a message comes from an unknown contact (@lid), this contains the actual phone number
+        /// </summary>
+        public string CallerPhoneNumber { get; set; }
+
+        /// <summary>
+        /// Phone number from sender_pn attribute (for messages that explicitly share phone number)
+        /// </summary>
+        public string SenderPhoneNumber { get; set; }
+
         public void Decrypt()
         {
             int decryptables = 0;
