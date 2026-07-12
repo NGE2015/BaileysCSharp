@@ -1,5 +1,23 @@
 # Changelog — BaileysCSharp
 
+## [2026-07-08] — d8c606e — ci: add feature/lid-normalization-bot-webhook branch to CI/CD triggers
+**App:** BaileysCSharp
+**What changed:** Added `feature/lid-normalization-bot-webhook` to the `on: push: branches:` list in `.github/workflows/main.yml`.
+**Files touched:** `.github/workflows/main.yml`
+**Why:** Needed so pushes to this branch actually deploy for testing the LID-normalization and RubyManagerBot webhook work.
+**Rollback:** `git revert d8c606e`
+
+---
+
+## [2026-07-08] — ad44864 — Merge remote-tracking branch 'origin/fix/lid-message-sending-null-reference' into feature/lid-normalization-bot-webhook
+**App:** BaileysCSharp
+**What changed:** Merged in a batch of fixes around WhatsApp's `@lid` (linked-device ID) contact identifiers: normalizes `@lid`-format sender/caller identifiers to real phone numbers for consistency (`MessageDecoder.cs`), adds null-safety checks and a device fallback so sending a message to a contact only known by LID (no cached phone number) no longer throws a null-reference exception (`MessagesSendSocket.cs`), adds phone-number extraction/caching for caller and sender numbers pulled from incoming messages (`MessagesRecvSocket.cs`, `MessageDecryptor.cs`, `SessionCipher.cs`), and includes the contact name in the payload sent to the CRM/RubyManagerBot webhook plus more detailed logging for traceability (`WhatsAppServiceV2.cs`). Conflicts in `.github/workflows/main.yml` and `README.md` were resolved keeping both branches' CI triggers and docs.
+**Files touched:** `BaileysCSharp/Core/Signal/MessageDecryptor.cs`, `BaileysCSharp/Core/Sockets/MessagesRecvSocket.cs`, `BaileysCSharp/Core/Sockets/MessagesSendSocket.cs`, `BaileysCSharp/Core/Utils/MessageDecoder.cs`, `BaileysCSharp/LibSignal/SessionCipher.cs`, `WhatsAppApi/Program.cs`, `WhatsAppApi/Services/WhatsAppServiceV2.cs`, `WhatsAppApi/appsettings*.json`, `PHONE_NUMBER_INVESTIGATION_WHATSAPP.md` (new)
+**Why:** Messages from contacts WhatsApp only exposes via `@lid` (rather than a phone number) were crashing the send path and/or arriving at the RubyManagerBot webhook without a usable phone number — this closes that gap so the unknown-number bot webhook (`2267b41`, on the same feature branch) can reliably identify who it's talking to.
+**Rollback:** `git revert -m 1 ad44864` (merge revert) — reintroduces the LID null-reference bug.
+
+---
+
 ## [2026-07-08] — fix: WhatsApp session stall after ~24h (keepalive zombie + silent reconnect)
 **App:** BaileysCSharp  
 **What changed:** Fixed a bug where WhatsApp sessions silently died after ~24 hours and required a manual disconnect + QR re-scan to recover. Sessions now auto-reconnect without any user intervention.  
