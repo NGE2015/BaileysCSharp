@@ -1,5 +1,14 @@
 # Changelog — BaileysCSharp
 
+## [2026-07-13] — 196a855 — fix: serialize WhatsApp reconnection to stop disconnect storms, add slow self-heal retry + tenant alert
+**App:** BaileysCSharp
+**What changed:** `Connection_UpdateAsync` called `ScheduleReconnectionAsync` unguarded on every socket-close event. A socket recreated mid-reconnection (`FullSocketRecreation`) that itself failed fast would raise its own close event, starting a second concurrent reconnection chain racing on the same `ReconnectAttempts` counter - confirmed live via production logs (`whatsapp.rubymanager.app/logs.html`) showing dozens of `disconnected with reason: 405` within ~10 minutes, far more than one backoff chain could produce alone. `SessionData` now holds a `ReconnectLock` (`SemaphoreSlim`) so at most one reconnection chain runs per session at a time; the old recursive fire-and-forget continuation is now a single guarded loop. Once fast attempts are exhausted, the session no longer dies silently forever: it retries every 30 minutes indefinitely (bounded for free by the existing 72h inactive-session cleanup in `PerformHealthCheck`) and fires a one-time alert to the CRM (new `NotifyConnectionDownAsync`, paired with `w4l_kiteschoolmanager`'s new `/api/whatsappconnection/connection-alert` endpoint) so the tenant is emailed instead of a dead session going unnoticed.
+**Files touched:** `WhatsAppApi/Services/WhatsAppServiceV2.cs`
+**Why:** This tenant's WhatsApp connection was dying after long idle periods and staying down until someone manually restarted it - the June 2026 keepalive/health-check fix (below) addressed one contributing cause but not the reconnection-storm bug, which this closes. Business requirement: scheduled WhatsApp/email sends must keep working via the always-running systemd service even with the CRM closed.
+**Rollback:** `git revert 196a855` — restores the old recursive/unguarded reconnection logic (reintroduces the storm bug).
+
+---
+
 ## [2026-07-08] — d8c606e — ci: add feature/lid-normalization-bot-webhook branch to CI/CD triggers
 **App:** BaileysCSharp
 **What changed:** Added `feature/lid-normalization-bot-webhook` to the `on: push: branches:` list in `.github/workflows/main.yml`.
