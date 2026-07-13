@@ -1,6 +1,6 @@
 # Changelog — BaileysCSharp
 
-## [2026-07-13] — fix: reconnection can now self-heal invalidated credentials — reach ForceSessionRestart, wipe dead creds, request fresh QR
+## [2026-07-13] — eee34d7 — fix: reconnection self-heals invalidated credentials — ForceSessionRestart reachable at attempt 7, wipes dead credentials, requests fresh QR via email alert
 **App:** BaileysCSharp
 **What changed:** The reconnection ladder had a dead rung: `ForceSessionRestart` was strategy #9+ but `ConnectionLost` (reason 405) capped at 8 attempts, so it never ran. When WhatsApp invalidates credentials server-side (brief-connect / immediate-disconnect cycles), all 8 strategies retried the *same* dead credentials, all failed, and the session sat in slow retry forever with no path to recovery. Five changes:
 1. **Strategy schedule redesign** — `GetMaxAttemptsForDisconnectReason` for `ConnectionLost`/`TimedOut` reduced 8 → 7, and `GetReconnectionStrategy` now maps `<=2 SimpleRetry`, `<=4 FullRecreation`, `<=6 CredentialRefresh`, `7 ForceSessionRestart`. `ForceSessionRestart` is now actually reachable (attempt 7). The `ExecuteReconnectionStrategy` switch key was renamed `ForceRestart` → `ForceSessionRestart` to match.
