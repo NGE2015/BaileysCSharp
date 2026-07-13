@@ -1,5 +1,18 @@
 # Changelog — BaileysCSharp
 
+## [2026-07-13] — fix: three bugs in post-QR-scan reconnection — session killed by stale chain, wrong QR timer, inflated attempt counter
+**App:** BaileysCSharp
+**What changed:** Commit `196a855` (reconnect-storm fix) introduced three bugs that together prevented the WhatsApp session from staying connected after a QR scan:
+1. **`ReconnectAttempts` not reset on `Open`** — when `WAConnectionState.Open` fired after a QR scan, the counter kept any pre-scan attempts, so the pairing disconnect's new chain started mid-budget and exhausted faster.
+2. **`QRSessionStartTime` not reset on `Open`** — the QR timeout was never restarted after a successful scan. When reconnection called `MakeSocket()` and generated a new QR, the 10-minute timeout checked elapsed time since the *original* QR, not the new one — so a scan at t=8.5min meant any reconnect QR timed-out within ~90 seconds and the session was killed.
+3. **`ReconnectLock` silently dropping the post-QR `Close`** — WhatsApp fires a brief `ConnectionLost` right after pairing (normal pairing-handshake flow). If a stale chain from a pre-scan disconnect held the lock, this critical disconnect was dropped (`Wait(0)` returned false) and never handled. The stale chain kept retrying with old context while the real reconnect was never attempted.
+**Fix:** `Open` branch in `Connection_UpdateAsync` now resets `ReconnectAttempts`, `QRSessionStartTime`, and cancels/replaces `sessionData.ReconnectCts`. `ScheduleReconnectionAsync` uses the CTS for cancellable `Task.Delay` (chain wakes immediately on `Open`) and sets `PendingReconnectNeeded = true` when a `Close` is dropped; the `finally` block checks this flag and fires a fresh chain once the lock is released.
+**Files touched:** `WhatsAppApi/Services/WhatsAppServiceV2.cs`
+**Why:** After the storm fix, users could scan the QR and the app would acknowledge the connection briefly, then show an error — the session never stayed connected. Root cause confirmed via production diagnostics (`/allDiagnostics`): session stuck in `reconnecting` state at attempt #3 shortly after a scan, `qrElapsedMinutes: 8.5`.
+**Rollback:** Revert the three changes in `Connection_UpdateAsync`'s Open branch and restore `ScheduleReconnectionAsync` and `SlowRetryLoopAsync` to not use the CTS.
+
+---
+
 ## [2026-07-13] — 196a855 — fix: serialize WhatsApp reconnection to stop disconnect storms, add slow self-heal retry + tenant alert
 **App:** BaileysCSharp
 **What changed:** `Connection_UpdateAsync` called `ScheduleReconnectionAsync` unguarded on every socket-close event. A socket recreated mid-reconnection (`FullSocketRecreation`) that itself failed fast would raise its own close event, starting a second concurrent reconnection chain racing on the same `ReconnectAttempts` counter - confirmed live via production logs (`whatsapp.rubymanager.app/logs.html`) showing dozens of `disconnected with reason: 405` within ~10 minutes, far more than one backoff chain could produce alone. `SessionData` now holds a `ReconnectLock` (`SemaphoreSlim`) so at most one reconnection chain runs per session at a time; the old recursive fire-and-forget continuation is now a single guarded loop. Once fast attempts are exhausted, the session no longer dies silently forever: it retries every 30 minutes indefinitely (bounded for free by the existing 72h inactive-session cleanup in `PerformHealthCheck`) and fires a one-time alert to the CRM (new `NotifyConnectionDownAsync`, paired with `w4l_kiteschoolmanager`'s new `/api/whatsappconnection/connection-alert` endpoint) so the tenant is emailed instead of a dead session going unnoticed.

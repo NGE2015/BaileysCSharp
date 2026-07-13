@@ -372,6 +372,18 @@ namespace WhatsAppApi.Services
                     // Clear the QR code when connection is established
                     sessionData.QRCode = null;
                     sessionData.IsConnected = true;
+                    // Fix 1: reset attempt counter so a post-pairing Close starts from 0
+                    sessionData.ReconnectAttempts = 0;
+                    // Fix 2: reset QR timer so if reconnection needs a new QR the 10-min
+                    // window starts fresh (without this a QR scanned at t=8.5min would
+                    // cause the next MakeSocket() QR to time-out immediately)
+                    sessionData.QRSessionStartTime = DateTime.MinValue;
+                    // Fix 3: cancel any sleeping reconnect chain so the pairing-disconnect
+                    // Close event that follows a QR scan can acquire the lock and start a
+                    // fresh chain — otherwise it gets dropped and the stale chain retries
+                    // with wrong context until it exhausts attempts
+                    sessionData.ReconnectCts.Cancel();
+                    sessionData.ReconnectCts = new CancellationTokenSource();
                 }
 
                 // Update LastActivity
@@ -1493,9 +1505,18 @@ namespace WhatsAppApi.Services
 
             if (!sessionData.ReconnectLock.Wait(0))
             {
-                _logger.LogDebug($"Reconnection already in progress for {sessionName}, ignoring duplicate disconnect event");
+                // A chain is already running. Remember that a new Close was dropped so the
+                // chain's finally block can start a fresh chain once the lock is released.
+                sessionData.PendingReconnectNeeded = true;
+                _logger.LogDebug($"Reconnection already in progress for {sessionName}, queuing reconnect for after current chain exits");
                 return;
             }
+
+            sessionData.PendingReconnectNeeded = false;
+            // Capture the CTS that was current when we acquired the lock. If Open fires during
+            // our delay it cancels this CTS and replaces sessionData.ReconnectCts with a new one,
+            // so the cancellation only affects this chain.
+            var cts = sessionData.ReconnectCts;
 
             try
             {
@@ -1520,7 +1541,17 @@ namespace WhatsAppApi.Services
                     var delaySeconds = CalculateReconnectionDelay(sessionData.ReconnectAttempts, sessionData.LastDisconnectReason);
                     _logger.LogInformation($"Scheduling reconnection for {sessionName} in {delaySeconds} seconds (attempt {sessionData.ReconnectAttempts}/{maxAttempts}) - Strategy: {GetReconnectionStrategy(sessionData.ReconnectAttempts)}");
 
-                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Open fired during our sleep — exit so the lock is released and
+                        // the pairing-disconnect Close can start a fresh chain
+                        _logger.LogInformation($"Reconnect chain cancelled for {sessionName} (Open event fired during delay)");
+                        return;
+                    }
 
                     if (_disposed || !_sessions.ContainsKey(sessionName)) return;
 
@@ -1547,12 +1578,20 @@ namespace WhatsAppApi.Services
 
                 if (fastAttemptsExhausted)
                 {
-                    await SlowRetryLoopAsync(sessionName, sessionData);
+                    await SlowRetryLoopAsync(sessionName, sessionData, cts);
                 }
             }
             finally
             {
                 sessionData.ReconnectLock.Release();
+                // If a Close event was dropped while we held the lock (PendingReconnectNeeded)
+                // and we are still disconnected, start a fresh chain now that the lock is free.
+                if (sessionData.PendingReconnectNeeded && !sessionData.IsConnected &&
+                    !_disposed && _sessions.ContainsKey(sessionName))
+                {
+                    sessionData.PendingReconnectNeeded = false;
+                    _ = Task.Run(() => ScheduleReconnectionAsync(sessionName, sessionData));
+                }
             }
         }
 
@@ -1564,7 +1603,7 @@ namespace WhatsAppApi.Services
         /// any session disconnected for more than MaxInactiveHours, which this loop's own
         /// _sessions.ContainsKey check will observe and stop on.
         /// </summary>
-        private async Task SlowRetryLoopAsync(string sessionName, SessionData sessionData)
+        private async Task SlowRetryLoopAsync(string sessionName, SessionData sessionData, CancellationTokenSource cts)
         {
             var slowRetryInterval = TimeSpan.FromMinutes(30);
 
@@ -1572,7 +1611,15 @@ namespace WhatsAppApi.Services
             {
                 if (_disposed || !_sessions.ContainsKey(sessionName)) return;
 
-                await Task.Delay(slowRetryInterval);
+                try
+                {
+                    await Task.Delay(slowRetryInterval, cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation($"Slow retry cancelled for {sessionName} (Open event fired during wait)");
+                    return;
+                }
 
                 if (_disposed || !_sessions.ContainsKey(sessionName)) return;
 
@@ -2006,6 +2053,21 @@ namespace WhatsAppApi.Services
             /// on ReconnectAttempts (this was the cause of the multi-per-minute disconnect storms).
             /// </summary>
             public SemaphoreSlim ReconnectLock { get; } = new SemaphoreSlim(1, 1);
+
+            /// <summary>
+            /// Cancellation source for the currently-running reconnect chain.
+            /// Cancelled (and replaced) when WAConnectionState.Open fires, so a sleeping
+            /// chain wakes immediately, releases the lock, and lets the pairing-disconnect
+            /// Close start a fresh chain rather than being silently dropped.
+            /// </summary>
+            public CancellationTokenSource ReconnectCts { get; set; } = new CancellationTokenSource();
+
+            /// <summary>
+            /// Set to true when a Close event is dropped because ReconnectLock is held.
+            /// Checked in ScheduleReconnectionAsync's finally block: if true and still
+            /// disconnected, a new chain is kicked off as soon as the lock is released.
+            /// </summary>
+            public volatile bool PendingReconnectNeeded = false;
 
             /// <summary>
             /// Whether a "connection down" alert has already been sent to the tenant for the
