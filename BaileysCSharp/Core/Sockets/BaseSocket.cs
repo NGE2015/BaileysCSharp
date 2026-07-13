@@ -312,6 +312,14 @@ namespace BaileysCSharp.Core
                 WS.MessageRecieved -= Client_MessageRecieved;
 
             }
+            else if (node.attrs["reason"] == "405")
+            {
+                // 405 = client outdated. WhatsApp is rejecting the negotiated web version, not the
+                // credentials. Recovery is a version refresh + reconnect (FullSocketRecreation
+                // re-fetches the current build), NOT a credential wipe. Logged distinctly so this
+                // isn't mistaken for a network ConnectionLost (408).
+                Logger.Error(new { reason }, "connection failure 405 (client outdated) — WhatsApp rejected the web version; a version refresh + reconnect is required");
+            }
 
             End(new Boom("Connection Failure", new BoomData(Convert.ToInt32(reason), node.attrs)));
 

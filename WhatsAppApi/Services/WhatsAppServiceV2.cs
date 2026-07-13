@@ -1804,8 +1804,13 @@ namespace WhatsAppApi.Services
 
                 // 3. Recreate session using existing logic
                 var config = new SocketConfig() { SessionName = sessionName };
+                // Re-fetch the current WhatsApp Web version, exactly like StartSessionAsync does.
+                // Without this the recreated socket falls back to SocketConfig's hardcoded default,
+                // which WhatsApp silently rejects once it ages out — so every FullRecreation /
+                // CredentialRefresh attempt would reconnect with a stale version and fail.
+                config.Version = await WhatsAppApi.Helper.WaBuildHelper.GetLatestAlphaAsync();
                 var credsFile = FindOrMigrateCredentialsFile(sessionName, config.CacheRoot);
-                
+
                 if (File.Exists(credsFile))
                 {
                     var authentication = AuthenticationCreds.Deserialize(File.ReadAllText(credsFile));

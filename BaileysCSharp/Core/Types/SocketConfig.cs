@@ -23,7 +23,11 @@ namespace BaileysCSharp.Core.Models
         public SocketConfig()
         {
             Browser = Browsers.Ubuntu("Chrome");
-            Version = [2, 3000, 1024961288];
+            // Hardcoded fallback only. Live connections override this via
+            // WaBuildHelper.GetLatestAlphaAsync(). Kept current (2026-07-13 build) so any
+            // path that does NOT re-fetch (e.g. a socket built straight from this default)
+            // still negotiates a version WhatsApp accepts. WhatsApp silently rejects old builds.
+            Version = [2, 3000, 1043053164];
             Logger = new DefaultLogger();
             Logger.Level = LogLevel.Trace;
             AppStateMacVerification = new AppStateMacVerification();

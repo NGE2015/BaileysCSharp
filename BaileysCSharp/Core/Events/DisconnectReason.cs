@@ -3,6 +3,7 @@
     public enum DisconnectReason
     {
         None = 0,
+        ClientOutdated = 405,
         ConnectionClosed = 428,
         ConnectionLost = 408,
         ConnectionReplaced = 440,

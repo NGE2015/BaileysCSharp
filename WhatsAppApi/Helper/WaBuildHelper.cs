@@ -24,9 +24,9 @@ namespace WhatsAppApi.Helper      // ← match your folder/namespace
     /// </summary>
     public static class WaBuildHelper
         {
-            // last known good build (updated 2026-06-24)
-            // Current version: 2.3000.1042026337-alpha
-            private static readonly uint[] Fallback = { 2, 3000, 1042026337 };
+            // last known good build (updated 2026-07-13)
+            // Current version: 2.3000.1043053164-alpha (wppconnect.io "stable current")
+            private static readonly uint[] Fallback = { 2, 3000, 1043053164 };
 
             public static uint[] LastResolvedVersion { get; private set; } = Fallback;
 
