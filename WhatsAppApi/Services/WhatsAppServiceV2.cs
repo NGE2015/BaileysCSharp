@@ -1028,6 +1028,49 @@ namespace WhatsAppApi.Services
         }
 
         /// <summary>
+        /// Alerts the tenant admin (via the CRM) that this session's WhatsApp connection has been
+        /// down long enough to exhaust fast reconnection attempts. Fire-and-forget, mirrors
+        /// CallRubyManagerBotWebhookAsync's pattern. Called at most once per down-episode.
+        /// </summary>
+        private async Task NotifyConnectionDownAsync(string sessionName, SessionData sessionData)
+        {
+            try
+            {
+                var crmBaseUrl = _configuration["CrmEndpoint:BaseUrl"] ?? "https://whatsapp.rubymanager.app";
+                var alertUrl = $"{crmBaseUrl}/api/whatsappconnection/connection-alert";
+
+                var payload = new
+                {
+                    clientExternalId = sessionName,
+                    disconnectedSince = sessionData.LastDisconnectionTime,
+                    lastDisconnectReason = sessionData.LastDisconnectReason.ToString()
+                };
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var response = await _httpClient.PostAsync(alertUrl, content, cts.Token);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"Connection-down alert sent for session {sessionName}");
+                }
+                else
+                {
+                    _logger.LogWarning($"Connection-down alert endpoint returned {response.StatusCode} for session {sessionName}");
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                _logger.LogWarning($"Connection-down alert call timed out for session {sessionName}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send connection-down alert for session {sessionName}");
+            }
+        }
+
+        /// <summary>
         /// Extracts phone number from WhatsApp JID format
         /// </summary>
         private string ExtractPhoneNumber(string remoteJid)
@@ -1437,51 +1480,121 @@ namespace WhatsAppApi.Services
             }
         }
 
+        /// <summary>
+        /// Runs the full reconnection lifecycle for a session: fast backoff attempts, then (if
+        /// those are exhausted) an indefinite slow retry with a one-time tenant alert. Guarded by
+        /// SessionData.ReconnectLock so at most one chain is ever in flight per session - a socket
+        /// recreated mid-attempt that itself fails fast must NOT spawn a second concurrent chain
+        /// (this was the cause of the multi-per-minute disconnect storms seen in production logs).
+        /// </summary>
         private async Task ScheduleReconnectionAsync(string sessionName, SessionData sessionData)
         {
             if (_disposed) return;
 
-            sessionData.ReconnectAttempts++;
-            var maxAttempts = GetMaxAttemptsForDisconnectReason(sessionData.LastDisconnectReason);
-
-            if (sessionData.ReconnectAttempts > maxAttempts)
+            if (!sessionData.ReconnectLock.Wait(0))
             {
-                _logger.LogError($"Session {sessionName} exceeded maximum reconnection attempts ({maxAttempts}) with disconnect reason {sessionData.LastDisconnectReason}");
-                await NotifyReconnectionFailure(sessionName, sessionData);
+                _logger.LogDebug($"Reconnection already in progress for {sessionName}, ignoring duplicate disconnect event");
                 return;
             }
 
-            // Enhanced backoff strategy based on attempt number
-            var delaySeconds = CalculateReconnectionDelay(sessionData.ReconnectAttempts, sessionData.LastDisconnectReason);
-
-            _logger.LogInformation($"Scheduling reconnection for {sessionName} in {delaySeconds} seconds (attempt {sessionData.ReconnectAttempts}/{maxAttempts}) - Strategy: {GetReconnectionStrategy(sessionData.ReconnectAttempts)}");
-
-            await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
-
-            if (_disposed || !_sessions.ContainsKey(sessionName)) return;
-
             try
             {
-                var success = await ExecuteReconnectionStrategy(sessionName, sessionData);
-                
+                var maxAttempts = GetMaxAttemptsForDisconnectReason(sessionData.LastDisconnectReason);
+                var fastAttemptsExhausted = false;
+
+                while (true)
+                {
+                    if (_disposed || !_sessions.ContainsKey(sessionName)) return;
+
+                    sessionData.ReconnectAttempts++;
+
+                    if (sessionData.ReconnectAttempts > maxAttempts)
+                    {
+                        _logger.LogError($"Session {sessionName} exceeded maximum reconnection attempts ({maxAttempts}) with disconnect reason {sessionData.LastDisconnectReason}");
+                        await NotifyReconnectionFailure(sessionName, sessionData);
+                        fastAttemptsExhausted = true;
+                        break;
+                    }
+
+                    // Enhanced backoff strategy based on attempt number
+                    var delaySeconds = CalculateReconnectionDelay(sessionData.ReconnectAttempts, sessionData.LastDisconnectReason);
+                    _logger.LogInformation($"Scheduling reconnection for {sessionName} in {delaySeconds} seconds (attempt {sessionData.ReconnectAttempts}/{maxAttempts}) - Strategy: {GetReconnectionStrategy(sessionData.ReconnectAttempts)}");
+
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+
+                    if (_disposed || !_sessions.ContainsKey(sessionName)) return;
+
+                    var success = false;
+                    try
+                    {
+                        success = await ExecuteReconnectionStrategy(sessionName, sessionData);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"Failed to reconnect session {sessionName} on attempt {sessionData.ReconnectAttempts}: {ex.Message}");
+                    }
+
+                    if (success)
+                    {
+                        _logger.LogInformation($"Successfully reconnected session {sessionName} on attempt {sessionData.ReconnectAttempts}");
+                        sessionData.ReconnectAttempts = 0;
+                        sessionData.AlertSent = false;
+                        return;
+                    }
+
+                    _logger.LogWarning($"Reconnection attempt {sessionData.ReconnectAttempts} failed for session {sessionName}");
+                }
+
+                if (fastAttemptsExhausted)
+                {
+                    await SlowRetryLoopAsync(sessionName, sessionData);
+                }
+            }
+            finally
+            {
+                sessionData.ReconnectLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Runs once fast reconnection attempts are exhausted. Keeps retrying every 30 minutes,
+        /// indefinitely, so the session can self-heal without a human noticing - scheduled
+        /// WhatsApp/email sends depend on this service staying connected even with the CRM
+        /// closed. No separate bounded cutoff is needed here: PerformHealthCheck already removes
+        /// any session disconnected for more than MaxInactiveHours, which this loop's own
+        /// _sessions.ContainsKey check will observe and stop on.
+        /// </summary>
+        private async Task SlowRetryLoopAsync(string sessionName, SessionData sessionData)
+        {
+            var slowRetryInterval = TimeSpan.FromMinutes(30);
+
+            while (true)
+            {
+                if (_disposed || !_sessions.ContainsKey(sessionName)) return;
+
+                await Task.Delay(slowRetryInterval);
+
+                if (_disposed || !_sessions.ContainsKey(sessionName)) return;
+
+                _logger.LogInformation($"Slow-retry: attempting to reconnect session {sessionName} (down since {sessionData.LastDisconnectionTime:u})");
+
+                var success = false;
+                try
+                {
+                    success = await SimpleSocketRetry(sessionData);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Slow-retry reconnection failed for session {sessionName}: {ex.Message}");
+                }
+
                 if (success)
                 {
-                    _logger.LogInformation($"Successfully reconnected session {sessionName} on attempt {sessionData.ReconnectAttempts}");
-                    sessionData.ReconnectAttempts = 0; // Reset counter on success
+                    _logger.LogInformation($"Session {sessionName} recovered via slow retry");
+                    sessionData.ReconnectAttempts = 0;
+                    sessionData.AlertSent = false;
                     return;
                 }
-                
-                _logger.LogWarning($"Reconnection attempt {sessionData.ReconnectAttempts} failed for session {sessionName}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Failed to reconnect session {sessionName} on attempt {sessionData.ReconnectAttempts}: {ex.Message}");
-            }
-            
-            // Schedule next attempt if we haven't exceeded the limit
-            if (sessionData.ReconnectAttempts < maxAttempts)
-            {
-                _ = Task.Run(() => ScheduleReconnectionAsync(sessionName, sessionData));
             }
         }
 
@@ -1704,12 +1817,14 @@ namespace WhatsAppApi.Services
         {
             try
             {
-                _logger.LogError($"All reconnection attempts failed for session {sessionName}. Manual intervention required.");
-                
-                // Could add notification to CRM system here in the future
-                // For now, just ensure the session is marked as disconnected
+                _logger.LogError($"All fast reconnection attempts failed for session {sessionName}. Switching to slow retry (every 30 min) and alerting tenant.");
                 sessionData.IsConnected = false;
-                sessionData.ReconnectAttempts = 0; // Reset for future attempts
+
+                if (!sessionData.AlertSent)
+                {
+                    sessionData.AlertSent = true;
+                    _ = NotifyConnectionDownAsync(sessionName, sessionData);
+                }
             }
             catch (Exception ex)
             {
@@ -1883,6 +1998,20 @@ namespace WhatsAppApi.Services
             // NEW: Track disconnection details for enhanced reconnection
             public DisconnectReason LastDisconnectReason { get; set; } = DisconnectReason.None;
             public DateTime LastDisconnectionTime { get; set; } = DateTime.MinValue;
+
+            /// <summary>
+            /// Ensures at most one reconnection chain runs per session at a time. A socket
+            /// recreated mid-reconnection can itself fail and raise its own Close event -
+            /// without this guard that spawns a second, concurrent reconnection chain racing
+            /// on ReconnectAttempts (this was the cause of the multi-per-minute disconnect storms).
+            /// </summary>
+            public SemaphoreSlim ReconnectLock { get; } = new SemaphoreSlim(1, 1);
+
+            /// <summary>
+            /// Whether a "connection down" alert has already been sent to the tenant for the
+            /// current down-episode. Reset to false on successful reconnect.
+            /// </summary>
+            public bool AlertSent { get; set; } = false;
 
             /// <summary>
             /// Cache for extracted caller phone numbers from messages
