@@ -1,5 +1,20 @@
 # Changelog — BaileysCSharp
 
+## [2026-07-13] — fix: reconnection can now self-heal invalidated credentials — reach ForceSessionRestart, wipe dead creds, request fresh QR
+**App:** BaileysCSharp
+**What changed:** The reconnection ladder had a dead rung: `ForceSessionRestart` was strategy #9+ but `ConnectionLost` (reason 405) capped at 8 attempts, so it never ran. When WhatsApp invalidates credentials server-side (brief-connect / immediate-disconnect cycles), all 8 strategies retried the *same* dead credentials, all failed, and the session sat in slow retry forever with no path to recovery. Five changes:
+1. **Strategy schedule redesign** — `GetMaxAttemptsForDisconnectReason` for `ConnectionLost`/`TimedOut` reduced 8 → 7, and `GetReconnectionStrategy` now maps `<=2 SimpleRetry`, `<=4 FullRecreation`, `<=6 CredentialRefresh`, `7 ForceSessionRestart`. `ForceSessionRestart` is now actually reachable (attempt 7). The `ExecuteReconnectionStrategy` switch key was renamed `ForceRestart` → `ForceSessionRestart` to match.
+2. **`ForceSessionRestart` self-heals** — instead of stop+start (which reused the dead creds), it now stops the session, backs up and removes the credentials file (renamed to `{sessionName}_creds.json.bak` via new `BackupAndDeleteCredentials`) so `StartSessionAsync` is forced to generate a fresh QR, restarts, and — if still not connected — fires a QR-scan-needed tenant alert. It returns `true` (QR-waiting is a valid recovery state) so the caller does NOT drop into the endless slow-retry loop.
+3. **Fixed disconnect reason being overwritten mid-chain** — `ScheduleReconnectionAsync` now snapshots the disconnect reason (`originalReason`) once at chain start and uses it for the attempt cap and delay formula throughout, instead of re-reading `sessionData.LastDisconnectReason` (which a failing recreated socket's Close event overwrites, previously corrupting the delay formula from attempt 4 onward).
+4. **Slow retry alternates strategies** — `SlowRetryLoopAsync` now alternates `FullSocketRecreation` (odd attempts) and `SimpleSocketRetry` (even attempts). Simple retry can never recover a session with stale credentials, so the full recreation path gives the 30-minute loop a real chance.
+5. **New QR-scan alert** — `NotifyQRScanNeededAsync` POSTs to the CRM `/api/whatsappconnection/qr-scan-needed` (same fire-and-forget pattern as `NotifyConnectionDownAsync`) with `clientExternalId`, `disconnectedSince`, `dashboardUrl`, and a user-facing message. If the endpoint doesn't exist yet the failure is logged (with the dashboard URL) so the code path is in place.
+**Files touched:** `WhatsAppApi/Services/WhatsAppServiceV2.cs`
+**Why:** Sessions whose credentials WhatsApp invalidated server-side were unrecoverable without a human manually deleting creds and re-scanning — they retried dead credentials forever. This makes the service self-heal (fresh QR) and, when a human scan is unavoidable, automatically alert the tenant with a dashboard link instead of the dead session going unnoticed.
+**Rollback:** Revert the changes in `GetMaxAttemptsForDisconnectReason`, `GetReconnectionStrategy`, `ExecuteReconnectionStrategy`, `ForceSessionRestart` (+ remove `BackupAndDeleteCredentials`), `ScheduleReconnectionAsync` (originalReason snapshot), `SlowRetryLoopAsync`, and remove `NotifyQRScanNeededAsync`.
+**Build note:** Not built in the automation sandbox (no .NET SDK, package.microsoft.com blocked). Verify with `dotnet build WhatsAppApi/WhatsAppApi.csproj` locally before committing.
+
+---
+
 ## [2026-07-13] — fix: three bugs in post-QR-scan reconnection — session killed by stale chain, wrong QR timer, inflated attempt counter
 **App:** BaileysCSharp
 **What changed:** Commit `196a855` (reconnect-storm fix) introduced three bugs that together prevented the WhatsApp session from staying connected after a QR scan:

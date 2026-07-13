@@ -1083,6 +1083,53 @@ namespace WhatsAppApi.Services
         }
 
         /// <summary>
+        /// Alerts the tenant admin (via the CRM) that this session can no longer self-heal and a
+        /// human must scan a fresh QR code from the dashboard. Distinct from NotifyConnectionDownAsync:
+        /// that one means "temporarily down, retrying"; this one means "credentials were wiped, action
+        /// required". Fire-and-forget. If the CRM endpoint does not exist yet, the failure is logged
+        /// but the code path is in place for when it does.
+        /// </summary>
+        private async Task NotifyQRScanNeededAsync(string sessionName, SessionData sessionData)
+        {
+            const string dashboardUrl = "https://whatsapp.rubymanager.app/status.html";
+            try
+            {
+                var crmBaseUrl = _configuration["CrmEndpoint:BaseUrl"] ?? "https://whatsapp.rubymanager.app";
+                var alertUrl = $"{crmBaseUrl}/api/whatsappconnection/qr-scan-needed";
+
+                var payload = new
+                {
+                    clientExternalId = sessionName,
+                    disconnectedSince = sessionData.LastDisconnectionTime,
+                    dashboardUrl = dashboardUrl,
+                    message = "Your WhatsApp session needs to be reconnected. Please scan the QR code at the dashboard."
+                };
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var response = await _httpClient.PostAsync(alertUrl, content, cts.Token);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"QR-scan-needed alert sent for session {sessionName}");
+                }
+                else
+                {
+                    _logger.LogWarning($"QR-scan-needed alert endpoint returned {response.StatusCode} for session {sessionName}. Tenant must scan a fresh QR at {dashboardUrl}");
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                _logger.LogWarning($"QR-scan-needed alert call timed out for session {sessionName}. Tenant must scan a fresh QR at {dashboardUrl}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to send QR-scan-needed alert for session {sessionName}. Tenant must scan a fresh QR at {dashboardUrl}");
+            }
+        }
+
+        /// <summary>
         /// Extracts phone number from WhatsApp JID format
         /// </summary>
         private string ExtractPhoneNumber(string remoteJid)
@@ -1520,7 +1567,13 @@ namespace WhatsAppApi.Services
 
             try
             {
-                var maxAttempts = GetMaxAttemptsForDisconnectReason(sessionData.LastDisconnectReason);
+                // Snapshot the disconnect reason that triggered THIS chain. A socket recreated
+                // mid-chain (FullSocketRecreation) can itself fail and fire a Close event whose
+                // handler overwrites sessionData.LastDisconnectReason - if we re-read that field
+                // each iteration the attempt cap and delay formula would silently switch reasons
+                // from attempt 4 onward. Freeze both here and use them throughout the loop.
+                var originalReason = sessionData.LastDisconnectReason;
+                var maxAttempts = GetMaxAttemptsForDisconnectReason(originalReason);
                 var fastAttemptsExhausted = false;
 
                 while (true)
@@ -1531,14 +1584,14 @@ namespace WhatsAppApi.Services
 
                     if (sessionData.ReconnectAttempts > maxAttempts)
                     {
-                        _logger.LogError($"Session {sessionName} exceeded maximum reconnection attempts ({maxAttempts}) with disconnect reason {sessionData.LastDisconnectReason}");
+                        _logger.LogError($"Session {sessionName} exceeded maximum reconnection attempts ({maxAttempts}) with disconnect reason {originalReason}");
                         await NotifyReconnectionFailure(sessionName, sessionData);
                         fastAttemptsExhausted = true;
                         break;
                     }
 
                     // Enhanced backoff strategy based on attempt number
-                    var delaySeconds = CalculateReconnectionDelay(sessionData.ReconnectAttempts, sessionData.LastDisconnectReason);
+                    var delaySeconds = CalculateReconnectionDelay(sessionData.ReconnectAttempts, originalReason);
                     _logger.LogInformation($"Scheduling reconnection for {sessionName} in {delaySeconds} seconds (attempt {sessionData.ReconnectAttempts}/{maxAttempts}) - Strategy: {GetReconnectionStrategy(sessionData.ReconnectAttempts)}");
 
                     try
@@ -1606,6 +1659,7 @@ namespace WhatsAppApi.Services
         private async Task SlowRetryLoopAsync(string sessionName, SessionData sessionData, CancellationTokenSource cts)
         {
             var slowRetryInterval = TimeSpan.FromMinutes(30);
+            var slowRetryAttempt = 0;
 
             while (true)
             {
@@ -1623,12 +1677,20 @@ namespace WhatsAppApi.Services
 
                 if (_disposed || !_sessions.ContainsKey(sessionName)) return;
 
-                _logger.LogInformation($"Slow-retry: attempting to reconnect session {sessionName} (down since {sessionData.LastDisconnectionTime:u})");
+                slowRetryAttempt++;
+
+                // Alternate strategies: a plain socket retry (SimpleSocketRetry) can never
+                // recover a session whose credentials are stale, so on odd attempts do a full
+                // socket recreation (which validates + rebuilds from stored creds) instead.
+                var useFullRecreation = (slowRetryAttempt % 2) == 1;
+                _logger.LogInformation($"Slow-retry attempt {slowRetryAttempt} for session {sessionName} using {(useFullRecreation ? "FullRecreation" : "SimpleRetry")} (down since {sessionData.LastDisconnectionTime:u})");
 
                 var success = false;
                 try
                 {
-                    success = await SimpleSocketRetry(sessionData);
+                    success = useFullRecreation
+                        ? await FullSocketRecreation(sessionName, sessionData)
+                        : await SimpleSocketRetry(sessionData);
                 }
                 catch (Exception ex)
                 {
@@ -1650,7 +1712,7 @@ namespace WhatsAppApi.Services
             return reason switch
             {
                 DisconnectReason.ConnectionClosed => 10, // 24-hour session expiry - more attempts
-                DisconnectReason.ConnectionLost or DisconnectReason.TimedOut => 8, // Network/timeout issues - moderate attempts  
+                DisconnectReason.ConnectionLost or DisconnectReason.TimedOut => 7, // Network/timeout issues - moderate attempts (attempt 7 = ForceSessionRestart, the last resort)
                 DisconnectReason.BadSession => 3,        // Bad session - fewer attempts
                 _ => 5                                    // Default fallback
             };
@@ -1675,9 +1737,10 @@ namespace WhatsAppApi.Services
             return attemptNumber switch
             {
                 <= 2 => "SimpleRetry",
-                <= 5 => "FullRecreation", 
-                <= 8 => "CredentialRefresh",
-                _ => "ForceRestart"
+                <= 4 => "FullRecreation",
+                <= 6 => "CredentialRefresh",
+                7 => "ForceSessionRestart", // last resort: wipe creds + fresh QR (previously unreachable)
+                _ => "ForceSessionRestart"
             };
         }
 
@@ -1692,7 +1755,7 @@ namespace WhatsAppApi.Services
                     "SimpleRetry" => await SimpleSocketRetry(sessionData),
                     "FullRecreation" => await FullSocketRecreation(sessionName, sessionData),
                     "CredentialRefresh" => await CredentialRefreshReconnection(sessionName, sessionData),
-                    "ForceRestart" => await ForceSessionRestart(sessionName, sessionData),
+                    "ForceSessionRestart" => await ForceSessionRestart(sessionName, sessionData),
                     _ => await SimpleSocketRetry(sessionData)
                 };
             }
@@ -1810,22 +1873,76 @@ namespace WhatsAppApi.Services
             try
             {
                 _logger.LogWarning($"Performing force session restart for session {sessionName} - last resort attempt");
-                
-                // Complete session restart - dispose everything and recreate from scratch
+
+                // 1. Complete session teardown - dispose everything.
                 await StopSessionAsync(sessionName, CancellationToken.None);
                 await Task.Delay(2000); // Brief pause
-                
-                // Restart session
+
+                // 2. Back up and delete the credentials file. WhatsApp can invalidate
+                //    credentials server-side after brief-connect/immediate-disconnect cycles;
+                //    once that happens EVERY reconnection strategy retries with the same dead
+                //    credentials and fails forever. Renaming the creds file to *.bak forces
+                //    StartSessionAsync to generate a fresh QR instead of reusing dead creds.
+                BackupAndDeleteCredentials(sessionName);
+
+                // 3. Restart session - with no creds file present this will generate a fresh QR.
                 await StartSessionAsync(sessionName, CancellationToken.None);
-                
-                // Wait a moment and check if session is connected
+
+                // 4. Wait a moment and check the resulting state.
                 await Task.Delay(3000);
-                return _sessions.ContainsKey(sessionName) && _sessions[sessionName].IsConnected;
+                var connected = _sessions.ContainsKey(sessionName) && _sessions[sessionName].IsConnected;
+
+                if (!connected)
+                {
+                    // We are now waiting for a human to scan a fresh QR from the dashboard.
+                    // This IS a valid recovery path - notify the tenant so they know to act,
+                    // and return true so the caller does NOT drop into the endless slow-retry
+                    // loop (slow retry cannot help while we legitimately wait for a QR scan).
+                    _logger.LogWarning($"Force restart for session {sessionName} produced a fresh QR - tenant must scan it from the dashboard");
+                    _ = NotifyQRScanNeededAsync(sessionName, sessionData);
+                }
+
+                // Either connected (great) or QR-waiting (also a valid terminal state): stop retrying.
+                return true;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Force session restart failed for session {sessionName}");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Renames the session's credentials file to {sessionName}_creds.json.bak so the next
+        /// StartSessionAsync is forced to show a fresh QR rather than reusing WhatsApp-invalidated
+        /// credentials. A backup (rather than a hard delete) keeps a recovery copy on disk.
+        /// </summary>
+        private void BackupAndDeleteCredentials(string sessionName)
+        {
+            try
+            {
+                var config = new SocketConfig() { SessionName = sessionName };
+                var credsFile = FindOrMigrateCredentialsFile(sessionName, config.CacheRoot);
+
+                if (!File.Exists(credsFile))
+                {
+                    _logger.LogInformation($"No credentials file to back up for session {sessionName} (fresh QR will be generated)");
+                    return;
+                }
+
+                var backupFile = credsFile + ".bak";
+                // Overwrite any stale previous backup so the move always succeeds.
+                if (File.Exists(backupFile))
+                {
+                    File.Delete(backupFile);
+                }
+
+                File.Move(credsFile, backupFile);
+                _logger.LogWarning($"Backed up and removed invalidated credentials for session {sessionName}: {backupFile}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to back up/delete credentials for session {sessionName}");
             }
         }
 
