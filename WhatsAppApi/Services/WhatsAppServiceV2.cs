@@ -393,6 +393,10 @@ namespace WhatsAppApi.Services
 
         private void Message_Upsert(object? sender, MessageEventModel e, string sessionName)
         {
+            // [DROP_TRACE] Temporary diagnostic logging to find where inbound messages are
+            // being silently discarded (CALLER_PN_CACHE fires but PHONE_NUMBER_TRACE never does).
+            _logger.LogInformation($"[DROP_TRACE] Message_Upsert fired - Session: {sessionName}, Type: {e.Type}, MessageCount: {e.Messages?.Count() ?? 0}");
+
             if (e.Type == MessageEventType.Notify)
             {
                 if (_sessions.TryGetValue(sessionName, out var sessionData))
@@ -400,7 +404,10 @@ namespace WhatsAppApi.Services
                     foreach (var msg in e.Messages)
                     {
                         if (msg.Message == null)
+                        {
+                            _logger.LogInformation($"[DROP_TRACE] Skipped - msg.Message is null. Session: {sessionName}, RemoteJid: {msg.Key?.RemoteJid}, FromMe: {msg.Key?.FromMe}, MessageId: {msg.Key?.Id}");
                             continue;
+                        }
 
                         // Log incoming message details for debugging phone number transformations
                         _logger.LogInformation($"[PHONE_NUMBER_TRACE] Incoming message - Session: {sessionName}, RemoteJid: {msg.Key?.RemoteJid}, FromMe: {msg.Key?.FromMe}, MessageId: {msg.Key?.Id}");
@@ -423,12 +430,22 @@ namespace WhatsAppApi.Services
                     }
                     sessionData.Messages.AddRange(e.Messages);
                 }
+                else
+                {
+                    _logger.LogWarning($"[DROP_TRACE] Skipped - no sessionData found for session {sessionName}");
+                }
+            }
+            else
+            {
+                _logger.LogInformation($"[DROP_TRACE] Skipped - event type was {e.Type}, not Notify. Session: {sessionName}, MessageCount: {e.Messages?.Count() ?? 0}");
             }
         }
 
         private void MessageHistory_Set(object? sender, MessageHistoryModel[] e)
         {
-            // Implement if necessary
+            // [DROP_TRACE] Temporary diagnostic logging - see if inbound messages are landing
+            // here (history sync) instead of Message_Upsert(Notify).
+            _logger.LogInformation($"[DROP_TRACE] MessageHistory_Set fired - Count: {e?.Length ?? 0}");
         }
 
         private void Pressence_Update(object? sender, PresenceModel e)
