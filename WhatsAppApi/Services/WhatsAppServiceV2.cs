@@ -62,6 +62,11 @@ namespace WhatsAppApi.Services
         private const int MaxSessionsPerService = 100;
         private const int MaxInactiveHours = 72; // 3 days for inactive sessions
         private const int MaxConnectedDays = 30; // 30 days for connected sessions
+
+        // Bounds for the inbound de-duplication set (see PruneProcessedMessageIds). The TTL only
+        // has to cover WhatsApp's offline-queue redelivery window, not the session lifetime.
+        private const int ProcessedMessageIdCap = 5000;
+        private static readonly TimeSpan ProcessedMessageIdTtl = TimeSpan.FromHours(6);
         private readonly int _qrSessionTimeoutMinutes;
         private bool _disposed = false;
 
@@ -413,47 +418,91 @@ namespace WhatsAppApi.Services
             // being silently discarded (CALLER_PN_CACHE fires but PHONE_NUMBER_TRACE never does).
             _logger.LogInformation($"[DROP_TRACE] Message_Upsert fired - Session: {sessionName}, Type: {e.Type}, MessageCount: {e.Messages?.Count() ?? 0}");
 
-            if (e.Type == MessageEventType.Notify)
+            // Notify = delivered live while connected.
+            // Append = delivered from WhatsApp's offline queue on reconnect - MessagesRecvSocket
+            //   types the event Append whenever the stanza carries an "offline" attribute. Since
+            //   this session drops (ConnectionLost/408) every few minutes, MOST real customer
+            //   messages arrive this way, and handling only Notify silently discarded them.
+            // Append is NOT inbound-only: MessagesSendSocket upserts our own outgoing sends as
+            //   Append too, and history sync uses it. Those are filtered by FromMe below - without
+            //   that guard we would POST our own replies to RubyManagerBot and it would answer
+            //   itself in a loop.
+            if (e.Type != MessageEventType.Notify && e.Type != MessageEventType.Append)
             {
-                if (_sessions.TryGetValue(sessionName, out var sessionData))
-                {
-                    foreach (var msg in e.Messages)
-                    {
-                        if (msg.Message == null)
-                        {
-                            _logger.LogInformation($"[DROP_TRACE] Skipped - msg.Message is null. Session: {sessionName}, RemoteJid: {msg.Key?.RemoteJid}, FromMe: {msg.Key?.FromMe}, MessageId: {msg.Key?.Id}");
-                            continue;
-                        }
-
-                        // Log incoming message details for debugging phone number transformations
-                        _logger.LogInformation($"[PHONE_NUMBER_TRACE] Incoming message - Session: {sessionName}, RemoteJid: {msg.Key?.RemoteJid}, FromMe: {msg.Key?.FromMe}, MessageId: {msg.Key?.Id}");
-
-                        // Save incoming messages to CRM asynchronously (fire-and-forget)
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await SaveMessageToCrmAsync(sessionName, msg);
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, $"Failed to save message to CRM for session {sessionName}");
-                            }
-                        });
-
-                        // Update LastActivity
-                        sessionData.LastActivity = DateTime.UtcNow;
-                    }
-                    sessionData.Messages.AddRange(e.Messages);
-                }
-                else
-                {
-                    _logger.LogWarning($"[DROP_TRACE] Skipped - no sessionData found for session {sessionName}");
-                }
+                _logger.LogInformation($"[DROP_TRACE] Skipped - event type was {e.Type}, not Notify/Append. Session: {sessionName}, MessageCount: {e.Messages?.Count() ?? 0}");
+                return;
             }
-            else
+
+            if (!_sessions.TryGetValue(sessionName, out var sessionData))
             {
-                _logger.LogInformation($"[DROP_TRACE] Skipped - event type was {e.Type}, not Notify. Session: {sessionName}, MessageCount: {e.Messages?.Count() ?? 0}");
+                _logger.LogWarning($"[DROP_TRACE] Skipped - no sessionData found for session {sessionName}");
+                return;
+            }
+
+            foreach (var msg in e.Messages)
+            {
+                if (msg.Message == null)
+                {
+                    _logger.LogInformation($"[DROP_TRACE] Skipped - msg.Message is null. Session: {sessionName}, RemoteJid: {msg.Key?.RemoteJid}, FromMe: {msg.Key?.FromMe}, MessageId: {msg.Key?.Id}");
+                    continue;
+                }
+
+                // Outbound (our own sends, echoed back as Append) must never reach the bot.
+                if (msg.Key?.FromMe == true)
+                {
+                    _logger.LogInformation($"[DROP_TRACE] Skipped - outbound message (FromMe). Session: {sessionName}, Type: {e.Type}, MessageId: {msg.Key?.Id}");
+                    continue;
+                }
+
+                // The offline queue can redeliver a message we already forwarded (and a reconnect
+                // storm can flush it more than once). A duplicate here means a duplicate bot reply
+                // to a real customer, so gate on message ID.
+                var messageId = msg.Key?.Id;
+                if (!string.IsNullOrEmpty(messageId) &&
+                    !sessionData.ProcessedMessageIds.TryAdd(messageId, DateTime.UtcNow))
+                {
+                    _logger.LogInformation($"[DROP_TRACE] Skipped - duplicate message already processed. Session: {sessionName}, Type: {e.Type}, MessageId: {messageId}");
+                    continue;
+                }
+
+                // Log incoming message details for debugging phone number transformations
+                _logger.LogInformation($"[PHONE_NUMBER_TRACE] Incoming message - Session: {sessionName}, Type: {e.Type}, RemoteJid: {msg.Key?.RemoteJid}, FromMe: {msg.Key?.FromMe}, MessageId: {msg.Key?.Id}");
+
+                // Save incoming messages to CRM asynchronously (fire-and-forget)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await SaveMessageToCrmAsync(sessionName, msg);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"Failed to save message to CRM for session {sessionName}");
+                    }
+                });
+
+                // Update LastActivity
+                sessionData.LastActivity = DateTime.UtcNow;
+            }
+
+            sessionData.Messages.AddRange(e.Messages);
+            PruneProcessedMessageIds(sessionData);
+        }
+
+        /// <summary>
+        /// Keeps SessionData.ProcessedMessageIds (the inbound de-duplication set) bounded. Entries
+        /// only need to outlive WhatsApp's offline-queue redelivery window, so they are dropped
+        /// once past the TTL and only when the set has actually grown past the cap.
+        /// </summary>
+        private static void PruneProcessedMessageIds(SessionData sessionData)
+        {
+            if (sessionData.ProcessedMessageIds.Count <= ProcessedMessageIdCap)
+                return;
+
+            var cutoff = DateTime.UtcNow - ProcessedMessageIdTtl;
+            foreach (var entry in sessionData.ProcessedMessageIds.Where(kvp => kvp.Value < cutoff))
+            {
+                sessionData.ProcessedMessageIds.TryRemove(entry.Key, out _);
             }
         }
 
@@ -2241,6 +2290,14 @@ namespace WhatsAppApi.Services
             /// Maps messageId -> SenderPhoneNumber
             /// </summary>
             public ConcurrentDictionary<string, string> SenderPhoneNumberCache { get; set; } = new();
+
+            /// <summary>
+            /// Inbound message IDs already forwarded to the CRM/bot, mapped to when they were
+            /// processed. WhatsApp redelivers offline-queued messages on reconnect, so without
+            /// this a customer could get the same bot reply several times. Bounded by
+            /// PruneProcessedMessageIds.
+            /// </summary>
+            public ConcurrentDictionary<string, DateTime> ProcessedMessageIds { get; } = new();
         }
     }
 }

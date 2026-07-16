@@ -1,6 +1,38 @@
 # Changelog — BaileysCSharp
 
-## [2026-07-16] — fix: reconnection silently killed inbound messages — FullSocketRecreation never re-attached the Message.Upsert handler
+## [2026-07-16] — fix: inbound messages delivered from WhatsApp's offline queue (MessageEventType.Append) were discarded
+**App:** BaileysCSharp
+**What changed:** Second bug in the same pipeline, uncovered immediately after the `AttachSocketEventHandlers` fix (`d46eb87`) let `Message_Upsert` run again. `Message_Upsert` processed only `MessageEventType.Notify` and dropped everything else. But `MessagesRecvSocket.cs:801` types an event `Append` — not `Notify` — whenever the incoming stanza carries an `offline` attribute, i.e. whenever WhatsApp delivers a message it queued while the client was disconnected:
+```csharp
+await UpsertMessage(msg.Msg, node.getattr("offline") != null ? MessageEventType.Append : MessageEventType.Notify);
+```
+Because this session drops with `ConnectionLost` (408) every few minutes, most real customer messages arrive in an offline flush right after a reconnect, get typed `Append`, and were silently discarded. This is the actual mechanism behind the original report ("when WhatsApp reconnects, the bot stops receiving messages") — the detached handler from `d46eb87` was the outer layer; this is the inner one.
+
+**Fix:** `Message_Upsert` now accepts `Append` alongside `Notify`, with two guards, because `Append` is not inbound-only:
+1. **`FromMe` filter** — `MessagesSendSocket.cs:282` upserts our *own* outgoing sends as `Append`, and history sync uses it too. Forwarding those to RubyManagerBot would make the bot reply to its own messages in a loop. Outbound is now explicitly skipped.
+2. **De-duplication** — WhatsApp can redeliver an offline-queued message, and a reconnect storm can flush it more than once. A duplicate here means a duplicate bot reply to a real customer, so inbound is gated on message ID via new `SessionData.ProcessedMessageIds`, bounded by `PruneProcessedMessageIds` (cap 5000, 6h TTL — the TTL only needs to cover the redelivery window).
+
+Also flattened the method to guard clauses (early `return`) instead of three nesting levels, and added `Type:` to the `[PHONE_NUMBER_TRACE]` line so Notify-vs-Append is visible in production.
+
+**Evidence (production, session `7afd5398-…`):** after the `d46eb87` deploy (service restarted 07:16:28), the 07:28:05 test message produced exactly:
+```
+[DROP_TRACE] Message_Upsert fired - Session: 7afd5398-..., Type: Append, MessageCount: 1
+[DROP_TRACE] Skipped - event type was Append, not Notify.
+```
+`Message_Upsert fired` had never appeared in any prior log, confirming `d46eb87` worked and the handler is attached. The message then hit the `Notify`-only filter. Connection log for that window shows why it was offline-queued: drops at 07:20:54, 07:26:48 and 07:27:48, with the message landing 17s after the last one.
+
+**Files touched:** `WhatsAppApi/Services/WhatsAppServiceV2.cs`, `CHANGELOG.md`
+**Why:** Inbound messages reached the handler but were thrown away based on a delivery-path detail that says nothing about whether a message is real. With the connection dropping every few minutes, `Notify`-only meant most customer messages never reached the bot.
+**Known issues not addressed here:**
+- `SessionData.Messages` is appended to on every upsert but **never read anywhere** in the codebase — an unbounded write-only `List<WebMessageInfo>` that grows for the life of the process. Left as-is to keep this change scoped; it should be removed or capped.
+- The ~5-minute `ConnectionLost` (408) cycle is still unexplained. This fix makes the pipeline survive the drops rather than depend on them not happening, but the drops themselves remain the top open issue.
+- `FullSocketRecreation` nulls `sessionData.Socket` before validating credentials (see `d46eb87` entry).
+**Rollback:** Revert this commit — restores `Notify`-only handling (reintroduces the dropped-offline-message bug).
+**Build note:** Verified locally — `dotnet build WhatsAppApi/WhatsAppApi.csproj` → 0 errors, no new warnings.
+
+---
+
+## [2026-07-16] — d46eb87 — fix: reconnection silently killed inbound messages — FullSocketRecreation never re-attached the Message.Upsert handler
 **App:** BaileysCSharp
 **What changed:** After a reconnect the session reported itself healthy (`state: connected`, `isConnected: true`) and outbound sends kept working, but **every inbound message was silently dropped** and nothing reached the RubyManagerBot webhook or the CRM. Root cause: `WASocket` builds a fresh `EventEmitter` in its constructor (`BaseSocket.cs:86` — `EV = new EventEmitter(config.Logger)`), so a new socket starts with zero subscribers. `StartSessionAsync` attached five handlers (`Auth.Update`, `Connection.Update`, `Message.Upsert`, `MessageHistory.Set`, `Pressence.Update`), but `FullSocketRecreation` re-attached only **two** (`Connection.Update`, `Auth.Update`). The recreated socket therefore had no `Message.Upsert` subscriber — `Message_Upsert` was never invoked at all. Because `Connection.Update` *did* survive, the session still reported connected, and outbound `sendMessage` talks to the socket directly and never needed the handler, so the failure was invisible from the dashboard.
 
