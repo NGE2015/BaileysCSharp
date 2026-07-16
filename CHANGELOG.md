@@ -1,6 +1,46 @@
 # Changelog — BaileysCSharp
 
-## [2026-07-16] — diag: make inbound-message failures visible — ProcessingMutex swallowed every exception, and core logging was silenced by an inverted level check
+## [2026-07-16] — fix: ROOT CAUSE — every failed reconnect leaked an event-buffer count, stranding all inbound messages forever
+**App:** BaileysCSharp
+**What changed:** This is the actual cause of "when WhatsApp reconnects the bot stops receiving messages, but the connection stays healthy and outbound still works". The two earlier fixes today (`d46eb87`, `dc703c9`) were real bugs but not this one.
+
+`EventEmitter.Buffer()` / `Flush()` are **counter-based**: `Flush()` decrements `buffersInProgress` and only actually flushes the event stores once it reaches **0**. Delivery itself is gated per store by `DataEventStore.Emit`:
+```csharp
+if (IsBufferable) internalData[action].AddRange(data);  // held, not delivered
+else              Execute(action, data);                // delivered immediately
+```
+The stores split exactly along the reported symptom:
+| Store | `IsBufferable` | Effect |
+|---|---|---|
+| `MessagingEventStore` | `true` | inbound messages buffered |
+| `MessageHistoryEventStore` | `true` | buffered |
+| `ConnectionEventStore` | `false` | always delivered → session keeps reporting `connected` |
+| `AuthEventStore` | `false` | always delivered → creds keep saving |
+
+`BaseSocket.BeforeConnect()` calls `EV.Buffer()` (+1) on **every** `MakeSocket()`, but the only balancing `Flush()` (−1) is driven by the server's `offline` ib notification (`events["CB:ib,,offline"]` → `HandleOfflineSynceDone`), which arrives **only on a successful connect**. So every *failed* reconnect attempt leaked a +1 that nothing ever removed. Once the counter could no longer reach 0, the otherwise-balanced `Buffer()`/`Flush()` pair in `ProcessNodeWithBuffer` could only oscillate `N → N+1 → N`, so the stores never flushed and **every inbound message accumulated in `internalData` forever** — decrypted successfully, upserted, emitted, and then silently held. Meanwhile connection and auth events bypassed buffering entirely, which is why every health signal stayed green and outbound (a direct socket call, no `EV`) kept working.
+
+**Fix:** New `EventEmitter.ResetBuffer()` — flushes anything stranded and returns the counter to 0 — called from `BeforeConnect()` so each connection attempt starts clean. Stranded events are flushed rather than dropped: they are real customer messages, and `SessionData.ProcessedMessageIds` (added in `dc703c9`) de-duplicates on message ID, so replaying them is safe.
+
+**Evidence (production, session `7afd5398-…`, all from today's log):**
+- **08:25:11** fresh restart → one `MakeSocket` → counter 1 → `offline` ib flush → **0** → message at 08:25:59 delivered end-to-end (`Decrypted_OK` → `Message_Upsert fired` Type: `Notify` → CRM 200 → RubyManagerBot webhook 200, bot replied).
+- **08:30:36** `ConnectionLost` → attempt 1 `MakeSocket` **failed** (+1, never balanced) → attempt 2 `MakeSocket` (+1) succeeded (−1) → counter stuck at **1**.
+- **08:32:36** next message: `[WA_CORE] {"stage":"Decrypted_OK","hasMessage":true,"offline":false}` — and then **nothing**. No `Message_Upsert fired`, no exception, no `ERR`/`WRN`. Decryption succeeded; the emit was buffered. Session still reported `state: connected`.
+- This also explains why `FullSocketRecreation` appeared to work while `SimpleSocketRetry` did not: full recreation builds a **new `WASocket`**, hence a **new `EventEmitter` with the counter reset to 0**. The 07:28:05 `Append` message that arrived right after a `FullSocketRecreation` was the same effect — not, as previously assumed, evidence about handler re-attachment.
+
+**Files touched:** `BaileysCSharp/Core/Events/EventEmitter.cs`, `BaileysCSharp/Core/Sockets/BaseSocket.cs`, `CHANGELOG.md`
+**Why:** Inbound messages were never lost to a crash or to decryption — they were sitting in an in-memory buffer that could never drain, for the entire life of the process, after the first failed reconnect attempt. Only a restart cleared it, which is exactly why the service "recovered" on every deploy and then silently died again minutes later.
+**Residual risk:** If a connect succeeds but the `offline` ib never arrives, the counter stays at 1 and messages buffer until the next `MakeSocket()` — whose `ResetBuffer()` now flushes them. Delayed rather than stranded forever; previously this state was permanent.
+**Known issues not addressed here:**
+- `ProcessingMutex.Mutex(Action)` is called with `async () => { … await … }`, binding as **`async void`** — the semaphore releases before the work completes (no real mutual exclusion) and exceptions after the first `await` escape the try/catch. Needs `Func<Task>`.
+- The ~5-minute `ConnectionLost` (408) cycle is still unexplained. It is the trigger that made this fatal, not the cause.
+- `SessionData.Messages` unbounded write-only list; `FullSocketRecreation` nulls `Socket` before validating credentials; `MessageDecoder.OnCallerPhoneNumberExtracted` subscription leak.
+- `WhatsSocketConsole` has 10 pre-existing compile errors on `main` (CI publishes `WhatsAppApi` only, so deploys are unaffected).
+**Rollback:** Revert this commit — restores the leaking buffer counter.
+**Build note:** `dotnet build WhatsAppApi/WhatsAppApi.csproj` → 0 errors.
+
+---
+
+## [2026-07-16] — 8142f01 — diag: make inbound-message failures visible — ProcessingMutex swallowed every exception, and core logging was silenced by an inverted level check
 **App:** BaileysCSharp
 **What changed:** Diagnostic commit. After `d46eb87` (handler re-attach) and `dc703c9` (accept `Append`), a test message at 07:54:00 still never reached `Message_Upsert` — decoded, then gone, with no log line anywhere. Investigating *why there was no evidence* found two independent reasons the system cannot report its own failures:
 

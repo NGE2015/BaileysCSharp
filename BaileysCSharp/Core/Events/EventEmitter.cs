@@ -100,6 +100,38 @@ namespace BaileysCSharp.Core.Events
             }
         }
 
+        /// <summary>
+        /// Delivers anything still buffered and returns the buffer counter to zero, so a new
+        /// connection attempt starts clean.
+        ///
+        /// Buffer()/Flush() are counter-based: Flush() only really flushes once buffersInProgress
+        /// returns to 0. BaseSocket.BeforeConnect() calls Buffer() on EVERY MakeSocket(), but the
+        /// only balancing Flush() is driven by the server's "offline" ib notification, which
+        /// arrives solely on a SUCCESSFUL connect. So every failed reconnect attempt leaked a +1
+        /// that nothing ever removed. Once the counter was permanently above zero, the balanced
+        /// Buffer()/Flush() pair in ProcessNodeWithBuffer could only oscillate N -> N+1 -> N and
+        /// never reached 0, so bufferable stores (messages, message history) accumulated forever
+        /// and inbound messages were never delivered - while non-bufferable stores (connection,
+        /// auth) kept working, which is why the session still looked healthy.
+        ///
+        /// Buffered events are flushed rather than dropped: they are real inbound messages, and
+        /// the caller de-duplicates on message ID.
+        /// </summary>
+        public void ResetBuffer()
+        {
+            lock (locker)
+            {
+                if (buffersInProgress > 0)
+                {
+                    foreach (var item in Events)
+                    {
+                        item.Value.Flush();
+                    }
+                }
+                buffersInProgress = 0;
+            }
+        }
+
         private bool InternalEmit<T>(EmitType type, params T[] args)
         {
             lock (locker)

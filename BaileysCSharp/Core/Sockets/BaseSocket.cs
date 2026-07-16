@@ -670,6 +670,13 @@ namespace BaileysCSharp.Core
         bool closed = false;
         private void BeforeConnect()
         {
+            // A previous connection attempt may have left the buffer counter above zero: this
+            // method Buffer()s on every MakeSocket(), but only a SUCCESSFUL connect produces the
+            // "offline" ib notification that flushes it. Each failed reconnect therefore leaked a
+            // +1, and once the counter could never reach 0 again every inbound message was
+            // buffered forever while the connection still reported healthy. Reset per attempt.
+            EV.ResetBuffer();
+
             if (Creds.Me != null)
             {
                 // start buffering important events
