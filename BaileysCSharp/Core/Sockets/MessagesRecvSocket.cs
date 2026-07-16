@@ -753,8 +753,30 @@ namespace BaileysCSharp.Core.Sockets
 
             await processingMutex.Mutex(async () =>
             {
-                msg.Decrypt();
+                // [DECRYPT_TRACE] Temporary diagnostic. Inbound messages are reaching decode
+                // (the phone-number extraction in MessageDecoder fires) but never reaching
+                // UpsertMessage, and UpsertMessage runs even when decryption FAILS - the
+                // Ciphertext branch below falls through to it. That leaves a throwing
+                // msg.Decrypt() as the only path producing neither an upsert nor a trace.
+                // Rethrown so behaviour is unchanged; this only makes the failure visible.
+                try
+                {
+                    msg.Decrypt();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex, $"[DECRYPT_TRACE] msg.Decrypt() THREW - MessageId={msg.Msg?.Key?.Id}, RemoteJid={msg.Msg?.Key?.RemoteJid}, FromMe={msg.Msg?.Key?.FromMe}, Offline={node.getattr("offline") != null}. Message will NOT be upserted and will NOT be acked (so WhatsApp will redeliver it). ExceptionType={ex.GetType().Name}");
+                    throw;
+                }
 
+                Logger.Error(new
+                {
+                    stage = "Decrypted_OK",
+                    messageId = msg.Msg?.Key?.Id,
+                    stubType = msg.Msg?.MessageStubType.ToString(),
+                    hasMessage = msg.Msg?.Message != null,
+                    offline = node.getattr("offline") != null,
+                }, "[DECRYPT_TRACE] msg.Decrypt() returned - proceeding toward UpsertMessage");
 
                 // message failed to decrypt
                 if (msg.Msg.MessageStubType == WebMessageInfo.Types.StubType.Ciphertext)

@@ -1,6 +1,29 @@
 # Changelog — BaileysCSharp
 
-## [2026-07-16] — fix: inbound messages delivered from WhatsApp's offline queue (MessageEventType.Append) were discarded
+## [2026-07-16] — diag: make inbound-message failures visible — ProcessingMutex swallowed every exception, and core logging was silenced by an inverted level check
+**App:** BaileysCSharp
+**What changed:** Diagnostic commit. After `d46eb87` (handler re-attach) and `dc703c9` (accept `Append`), a test message at 07:54:00 still never reached `Message_Upsert` — decoded, then gone, with no log line anywhere. Investigating *why there was no evidence* found two independent reasons the system cannot report its own failures:
+
+1. **`ProcessingMutex.Mutex` had a completely empty catch.** All inbound message processing (`msg.Decrypt()` → `SendReceipt` → `CleanMessage` → `UpsertMessage`) runs inside it. Any exception was caught and discarded — not logged, not rethrown. The message was silently dropped and, because `SendMessageAck(node)` sits after the mutex, never acked either. This is the black hole that made the last two fixes look ineffective. Added a static `ProcessingMutex.OnException` hook, wired to `_logger.LogError`, and moved `semaphoreSlim.Release()` into a `finally`.
+2. **All core-library logging was silenced.** `LogLevel` is ordered `Raw = 100, Fatal = 60, Error = 50 … Trace = 10`, and every guard reads `if (Level <= LogLevel.Error)` — a threshold where *lower is more verbose*. `StartSessionAsync` set `config.Logger.Level = LogLevel.Raw` (100), making every such check false and suppressing **every** `Error`/`Warn`/`Info`/`Debug`/`Trace` call in the entire core library. `Raw` is not "most verbose"; it is a special high value only `Raw()` checks (`Level >= Raw`). Changed to `LogLevel.Error` (13 `Logger.Error` sites core-wide, so volume is bounded), and set the same on the `SocketConfig` built inside `FullSocketRecreation` — it defaults to `Trace`, which would now flood.
+3. **Core logs never reached the log file.** `DefaultLogger.Write` only writes to `Console`, so under systemd core diagnostics went to the journal, invisible to `/logs.html`. Added a static `DefaultLogger.Sink` invoked from `Write` (guarded so a sink failure can never break the receive loop), pointed at Serilog as `[WA_CORE]` from the `WhatsAppServiceV2` constructor.
+
+Also added `[DECRYPT_TRACE]` around `msg.Decrypt()`: a try/catch that logs the exception (type, message ID, JID, offline flag) and **rethrows**, plus a `Decrypted_OK` marker before `UpsertMessage`. Behaviour is unchanged — this only makes the failure observable.
+
+**How to read the next test message:** `[DECRYPT_TRACE] msg.Decrypt() THREW` = decryption is failing (likely Signal session damage → the remedy is a fresh QR via `ForceSessionRestart`). `Decrypted_OK` followed by no `[DROP_TRACE] Message_Upsert fired` = the failure is in `SendReceipt`/`CleanMessage`/`UpsertMessage`, and `ProcessingMutex.OnException` will now name it. Neither appearing = the message is dying before the mutex.
+
+**Files touched:** `BaileysCSharp/Core/Helper/ProcessingMutex.cs`, `BaileysCSharp/Core/Logging/Logger.cs`, `BaileysCSharp/Core/Sockets/MessagesRecvSocket.cs`, `WhatsAppApi/Services/WhatsAppServiceV2.cs`, `CHANGELOG.md`
+**Why:** Two rounds of fixes were shipped against inferred root causes because the system could not report what was actually failing. The empty catch plus the silenced logger meant a dropped message left literally no trace. This buys evidence before the next change.
+**Known issues not addressed here:**
+- **`ProcessingMutex.Mutex(Action)` is called with `async () => { … await … }`, which binds as `async void`.** The lambda returns at its first `await`, so the semaphore is released before the work completes (no actual mutual exclusion), `await Mutex(…)` does not wait for the body, and any exception thrown *after* the first `await` escapes the try/catch entirely as an unhandled async-void exception. Real bug; needs `Func<Task>` and an `await action()`. Left out of a diagnostic commit — it changes hot-path concurrency semantics.
+- The ~5-minute `ConnectionLost` (408) cycle remains unexplained and may be a symptom of the same underlying session damage.
+- `SessionData.Messages` is still an unbounded write-only list; `FullSocketRecreation` still nulls `Socket` before validating credentials.
+**Rollback:** Revert this commit — restores the silent catch and the suppressed core logging (and the blindness).
+**Build note:** `dotnet build WhatsAppApi/WhatsAppApi.csproj` → 0 errors. Note `WhatsSocketConsole` has 10 **pre-existing** compile errors on `main` (verified by stashing these changes and rebuilding); it is not built or deployed by CI, which publishes `WhatsAppApi` only.
+
+---
+
+## [2026-07-16] — dc703c9 — fix: inbound messages delivered from WhatsApp's offline queue (MessageEventType.Append) were discarded
 **App:** BaileysCSharp
 **What changed:** Second bug in the same pipeline, uncovered immediately after the `AttachSocketEventHandlers` fix (`d46eb87`) let `Message_Upsert` run again. `Message_Upsert` processed only `MessageEventType.Notify` and dropped everything else. But `MessagesRecvSocket.cs:801` types an event `Append` — not `Notify` — whenever the incoming stanza carries an `offline` attribute, i.e. whenever WhatsApp delivers a message it queued while the client was disconnected:
 ```csharp

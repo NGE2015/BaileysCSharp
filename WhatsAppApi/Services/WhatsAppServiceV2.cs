@@ -80,6 +80,19 @@ namespace WhatsAppApi.Services
             // Read QR session timeout from configuration (default: 10 minutes)
             _qrSessionTimeoutMinutes = _configuration.GetValue<int>("WhatsAppSettings:QRSessionTimeoutMinutes", 10);
 
+            // Bridge BaileysCSharp core logging into Serilog. The core library writes to Console
+            // only, so under systemd it went to the journal and never reached the log file that
+            // /logs.html reads - which is why decrypt failures were invisible. The JSON payload
+            // carries its own "level" field. Static + idempotent: one sink for the process.
+            BaileysCSharp.Core.Logging.DefaultLogger.Sink = json =>
+                _logger.LogInformation("[WA_CORE] {CoreLog}", json);
+
+            // ProcessingMutex wraps ALL inbound message processing (decrypt -> receipt -> upsert)
+            // in a catch that was completely empty, so a failure there dropped the message with no
+            // record anywhere. Surface it.
+            BaileysCSharp.Core.Helper.ProcessingMutex.OnException = ex =>
+                _logger.LogError(ex, "[DECRYPT_TRACE] Exception swallowed by ProcessingMutex while processing an inbound message - the message was dropped and never acked. ExceptionType={ExceptionType}", ex.GetType().Name);
+
             _healthCheckTimer = new Timer(PerformHealthCheck, null, _healthCheckInterval, _healthCheckInterval);
             
             // Auto-restore existing sessions on startup
@@ -148,7 +161,13 @@ namespace WhatsAppApi.Services
 
             BaseKeyStore keys = new FileKeyStore(config.CacheRoot);
 
-            config.Logger.Level = BaileysCSharp.Core.Logging.LogLevel.Raw;
+            // LogLevel guards in DefaultLogger are thresholds where LOWER is more verbose
+            // (Trace=10 ... Error=50 ... Raw=100). This was LogLevel.Raw, which made every
+            // "if (Level <= LogLevel.Error)" check false and silently suppressed ALL core-library
+            // logging - including the decrypt diagnostics - leaving us blind to why inbound
+            // messages die before reaching Message_Upsert. Error keeps the volume bounded
+            // (13 Logger.Error sites in the whole core library).
+            config.Logger.Level = BaileysCSharp.Core.Logging.LogLevel.Error;
             config.Auth = new AuthenticationState()
             {
                 Creds = authentication,
@@ -1886,6 +1905,9 @@ namespace WhatsAppApi.Services
 
                 // 3. Recreate session using existing logic
                 var config = new SocketConfig() { SessionName = sessionName };
+                // Match StartSessionAsync: SocketConfig defaults to Trace, which - now that core
+                // logging is bridged into Serilog - would flood the log file from this path.
+                config.Logger.Level = BaileysCSharp.Core.Logging.LogLevel.Error;
                 // Re-fetch the current WhatsApp Web version, exactly like StartSessionAsync does.
                 // Without this the recreated socket falls back to SocketConfig's hardcoded default,
                 // which WhatsApp silently rejects once it ages out — so every FullRecreation /

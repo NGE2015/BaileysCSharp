@@ -23,6 +23,18 @@ namespace BaileysCSharp.Core.Logging
         private static object locker = new object();
         public LogLevel Level { get; set; }
 
+        /// <summary>
+        /// Optional global sink for core-library log lines, receiving the same JSON that goes to
+        /// Console. The host app (WhatsAppApi) points this at Serilog so core diagnostics land in
+        /// the log file that /logs.html reads - previously every core log went to Console only and
+        /// was invisible to anyone debugging via the dashboard.
+        ///
+        /// Note the Level guards on the methods below are threshold checks where LOWER is more
+        /// verbose (Trace=10 ... Error=50 ... Raw=100), so setting Level = Raw silences everything
+        /// except Raw() rather than enabling everything.
+        /// </summary>
+        public static Action<string>? Sink { get; set; }
+
 
         public void Error(string message)
         {
@@ -258,6 +270,16 @@ namespace BaileysCSharp.Core.Logging
             var json = JsonSerializer.Serialize(logEntry, settings);
             System.Diagnostics.Debug.WriteLine(json);
             Console.Write($"{json}\n");
+
+            // Never let a sink failure break the socket's receive loop.
+            try
+            {
+                Sink?.Invoke(json);
+            }
+            catch
+            {
+                // ignored
+            }
         }
 
         public void Raw(object obj, string message)
