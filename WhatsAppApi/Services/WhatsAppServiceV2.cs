@@ -152,14 +152,7 @@ namespace WhatsAppApi.Services
 
             var socket = new WASocket(config);
 
-            // Attach event handlers
-            _logger.LogDebug($"Attaching event handlers for session {sessionName}");
-            socket.EV.Auth.Update += (sender, creds) => Auth_Update(sender, creds, sessionName);
-            socket.EV.Connection.Update += (sender, state) => Connection_UpdateAsync(sender, state, sessionName);
-            socket.EV.Message.Upsert += (sender, e) => Message_Upsert(sender, e, sessionName);
-            socket.EV.MessageHistory.Set += MessageHistory_Set;
-            socket.EV.Pressence.Update += Pressence_Update;
-            _logger.LogDebug($"Event handlers attached successfully for session {sessionName}");
+            AttachSocketEventHandlers(socket, sessionName);
 
             // Subscribe to phone number extraction events from MessageDecoder
             // This allows us to cache caller_pn and sender_pn for later use
@@ -389,6 +382,29 @@ namespace WhatsAppApi.Services
                 // Update LastActivity
                 sessionData.LastActivity = DateTime.UtcNow;
             }
+        }
+
+        /// <summary>
+        /// Attaches every per-socket event handler for a session. WASocket creates a fresh
+        /// EventEmitter in its constructor, so EVERY code path that builds a new WASocket must
+        /// call this — otherwise the new socket silently loses whichever handlers it did not
+        /// re-attach. FullSocketRecreation previously re-attached only Auth + Connection, so a
+        /// recreated socket reported itself connected and kept sending, while every inbound
+        /// message was dropped because Message.Upsert had no subscriber.
+        ///
+        /// Note: the static MessageDecoder.OnCallerPhoneNumberExtracted subscription is
+        /// deliberately NOT here — it is process-global, survives socket recreation on its own,
+        /// and subscribing per socket would leak a subscription on every reconnect.
+        /// </summary>
+        private void AttachSocketEventHandlers(WASocket socket, string sessionName)
+        {
+            _logger.LogDebug($"Attaching event handlers for session {sessionName}");
+            socket.EV.Auth.Update += (sender, creds) => Auth_Update(sender, creds, sessionName);
+            socket.EV.Connection.Update += (sender, state) => Connection_UpdateAsync(sender, state, sessionName);
+            socket.EV.Message.Upsert += (sender, e) => Message_Upsert(sender, e, sessionName);
+            socket.EV.MessageHistory.Set += MessageHistory_Set;
+            socket.EV.Pressence.Update += Pressence_Update;
+            _logger.LogDebug($"Event handlers attached successfully for session {sessionName}");
         }
 
         private void Message_Upsert(object? sender, MessageEventModel e, string sessionName)
@@ -1842,10 +1858,9 @@ namespace WhatsAppApi.Services
                     sessionData.Socket = socket;
                     sessionData.Config = config;
                     
-                    // Setup event handlers
-                    socket.EV.Connection.Update += (sender, e) => Connection_UpdateAsync(sender, e, sessionName);
-                    socket.EV.Auth.Update += (sender, e) => Auth_Update(sender, e, sessionName);
-                    
+                    // Setup event handlers — must attach ALL of them, not just Auth + Connection.
+                    AttachSocketEventHandlers(socket, sessionName);
+
                     socket.MakeSocket();
                     await Task.Delay(5000); // Wait longer for full recreation
                     

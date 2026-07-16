@@ -1,5 +1,33 @@
 # Changelog — BaileysCSharp
 
+## [2026-07-16] — fix: reconnection silently killed inbound messages — FullSocketRecreation never re-attached the Message.Upsert handler
+**App:** BaileysCSharp
+**What changed:** After a reconnect the session reported itself healthy (`state: connected`, `isConnected: true`) and outbound sends kept working, but **every inbound message was silently dropped** and nothing reached the RubyManagerBot webhook or the CRM. Root cause: `WASocket` builds a fresh `EventEmitter` in its constructor (`BaseSocket.cs:86` — `EV = new EventEmitter(config.Logger)`), so a new socket starts with zero subscribers. `StartSessionAsync` attached five handlers (`Auth.Update`, `Connection.Update`, `Message.Upsert`, `MessageHistory.Set`, `Pressence.Update`), but `FullSocketRecreation` re-attached only **two** (`Connection.Update`, `Auth.Update`). The recreated socket therefore had no `Message.Upsert` subscriber — `Message_Upsert` was never invoked at all. Because `Connection.Update` *did* survive, the session still reported connected, and outbound `sendMessage` talks to the socket directly and never needed the handler, so the failure was invisible from the dashboard.
+
+This was a **one-way door**: `SimpleSocketRetry` reuses the existing socket object (`sessionData.Socket.MakeSocket()`) and so preserves whatever handlers are present, but once `FullSocketRecreation` swapped in a handler-less socket, no later reconnect could restore it — only a process restart or `ForceSessionRestart` (which routes through `StartSessionAsync`) would.
+
+**Fix:** Extracted the handler wiring into a single `AttachSocketEventHandlers(socket, sessionName)` method, now called by **both** `StartSessionAsync` and `FullSocketRecreation`. The static `MessageDecoder.OnCallerPhoneNumberExtracted` subscription was deliberately left in `StartSessionAsync` only — it is process-global and survives socket recreation on its own, so moving it into the shared method would leak a subscription on every reconnect.
+
+Also bumped the hardcoded WhatsApp Web version defaults `1043053164 → 1043263898` (`SocketConfig` default and `WaBuildHelper.Fallback`) to the build observed negotiated in production on 2026-07-16.
+
+**Evidence (production logs, session `7afd5398-…`):**
+- 2026-07-15 had 150 `[PHONE_NUMBER_TRACE]` lines and 25 inbound "Incoming message" lines; 2026-07-16 had **zero** of each.
+- The `[DROP_TRACE]` diagnostics from `d27d8b1` (deployed — commit 13:12 UTC 07-15, app restarted 16:55:05 UTC 07-15, no restart since) produced **zero** output. `Message_Upsert`'s first line logs unconditionally before any filtering, which proves the method was never entered — ruling out every "message arrived but was filtered" theory.
+- The 07:02:33 test message was received and decrypted — `[CALLER_PN_CACHE]` cached `351931652836@s.whatsapp.net` for MsgId `3A32F97624D5CD6174B8` — then vanished. That cache is fed by a **static** event on `MessageDecoder`, which is exactly why it survived recreation while the instance-level `EV` handlers did not. Decrypt pipeline alive, delivery pipeline detached.
+- `FullSocketRecreation` ran 42× on 07-16 and 57× on 07-15 (driven by a ~10-minute `ConnectionLost`/408 cycle), so the bug fired within minutes of every process start.
+- Why 07-15 still worked until 20:29 despite recreations starting 10:37: the 19:24–19:33 recreations all logged `Stored credentials invalid` and returned early — a path that bails *before* `new WASocket(config)`. Since `FullSocketRecreation` nulls `sessionData.Socket` at the top, those failures orphaned the original 16:55 socket in memory, still connected and still holding its handler, so messages kept flowing. 07-16 logged **zero** `Stored credentials invalid`, so every recreation ran to completion and installed a handler-less socket.
+
+**Files touched:** `WhatsAppApi/Services/WhatsAppServiceV2.cs`, `BaileysCSharp/Core/Types/SocketConfig.cs`, `WhatsAppApi/Helper/WaBuildHelper.cs`, `CHANGELOG.md`
+**Why:** Inbound WhatsApp messages — the entire bot pipeline — stopped reaching RubyManagerBot within ~10 minutes of any process start, while every health signal reported green. The `[DROP_TRACE]` logging from `d27d8b1` is retained for now: it is the cheapest way to confirm the fix in production (`Message_Upsert fired` should now appear after a recreation). Remove it once verified.
+**Known issues not addressed here:**
+- `FullSocketRecreation` sets `sessionData.Socket = null` *before* validating credentials, so the invalid-creds path returns `false` leaving `Socket == null`; a subsequent `SimpleSocketRetry` then throws `NullReferenceException`, caught and logged as a generic "retry failed", masking the cause. Validation should move ahead of the teardown.
+- `MessageDecoder.OnCallerPhoneNumberExtracted` is subscribed on every `StartSessionAsync` and never unsubscribed (observed firing 4× per message). With multiple tenants this also writes each decoded number into every session's cache. Needs a redesign that carries the session identity through the decoder.
+- The underlying ~10-minute `ConnectionLost` (408) cycle is unexplained and still present; this fix makes reconnection survivable, not unnecessary.
+**Rollback:** Revert this commit — restores the two-handler `FullSocketRecreation` (reintroduces the dropped-inbound bug) and the previous version defaults.
+**Build note:** Verified locally — `dotnet build WhatsAppApi/WhatsAppApi.csproj` → 0 errors (496 pre-existing warnings).
+
+---
+
 ## [2026-07-13] — fix: refresh WhatsApp Web version on reconnect + bump hardcoded version defaults + name ClientOutdated (405)
 **App:** BaileysCSharp
 **What changed:** Investigation of a session dropping ~1h after each QR scan (reason `ConnectionLost`/408) ruled out the "client outdated" theory — the live diagnostic `waVersion` was `2.3000.1043053164`, which is the current wppconnect.io "stable current" build, so the scraper (`WaBuildHelper.GetLatestAlphaAsync`) was already returning the newest version on initial connect. But two real defects surfaced:
